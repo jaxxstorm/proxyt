@@ -216,7 +216,7 @@ This provides detailed request/response logging including headers and routing de
 
 ## License
 
-[License information to be added]
+See [LICENSE](LICENSE) for details.
 
 ## Support
 
