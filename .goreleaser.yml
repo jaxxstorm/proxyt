@@ -1,0 +1,52 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: proxyt
+    goos:   [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -X github.com/jaxxstorm/proxyt/cmd.Version={{ .Version }}
+
+archives:
+  - id: default
+    builds: [proxyt]
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files: [LICENSE*]
+    format_overrides:
+      - goos: windows
+        format: zip
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+brews:
+  - name: proxyt
+    repository:
+      owner: jaxxstorm
+      name: homebrew-tap
+    commit_author:
+      name:  GitHub Actions
+      email: bot@leebriggs.co.uk
+    directory: Formula
+    description: Easily proxy the Tailscale login API for blocked networks.
+    homepage: https://github.com/jaxxstorm/proxyt
+
+scoops:
+  - name: proxyt
+    repository:
+      owner: jaxxstorm
+      name: scoop-bucket
+    commit_author:
+      name:  GitHub Actions
+      email: bot@leebriggs.co.uk
+    description: Easily proxy the Tailscale login API for blocked networks.
+    homepage: https://github.com/jaxxstorm/proxyt
