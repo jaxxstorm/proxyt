@@ -28,6 +28,59 @@ changelog:
       - "^docs:"
       - "^test:"
 
+dockers:
+  - image_templates:
+      - "ghcr.io/jaxxstorm/proxyt:latest"
+      - "ghcr.io/jaxxstorm/proxyt:{{ .Tag }}"
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.description=Tailscale login server proxy"
+      - "--label=org.opencontainers.image.url=https://github.com/jaxxstorm/proxyt"
+      - "--label=org.opencontainers.image.source=https://github.com/jaxxstorm/proxyt"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.created={{ time \"2006-01-02T15:04:05Z07:00\" }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+    goos: linux
+    goarch: amd64
+    ids:
+      - proxyt
+    extra_files:
+      - LICENSE
+  - image_templates:
+      - "ghcr.io/jaxxstorm/proxyt:{{ .Tag }}-arm64"
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.description=Tailscale login server proxy"
+      - "--label=org.opencontainers.image.url=https://github.com/jaxxstorm/proxyt"
+      - "--label=org.opencontainers.image.source=https://github.com/jaxxstorm/proxyt"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.created={{ time \"2006-01-02T15:04:05Z07:00\" }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+    goos: linux
+    goarch: arm64
+    ids:
+      - proxyt
+    extra_files:
+      - LICENSE
+
+docker_manifests:
+  - name_template: "ghcr.io/jaxxstorm/proxyt:{{ .Tag }}"
+    image_templates:
+      - "ghcr.io/jaxxstorm/proxyt:{{ .Tag }}-arm64"
+      - "ghcr.io/jaxxstorm/proxyt:latest"
+  - name_template: "ghcr.io/jaxxstorm/proxyt:latest"
+    image_templates:
+      - "ghcr.io/jaxxstorm/proxyt:{{ .Tag }}-arm64"
+      - "ghcr.io/jaxxstorm/proxyt:latest"
+
 brews:
   - name: proxyt
     repository:

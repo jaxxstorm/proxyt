@@ -10,6 +10,116 @@ This project builds a very simple Go proxy which can be hosted externally and wi
 
 ## Installation
 
+### macOS (via Homebrew)
+
+```bash
+brew tap jaxxstorm/tap
+brew install proxyt
+```
+
+### Windows (via Scoop)
+
+```bash
+scoop bucket add jaxxstorm https://github.com/jaxxstorm/scoop-bucket.git
+scoop install proxyt
+```
+
+### Linux (Download Binary)
+
+#### Quick Install Script
+
+```bash
+# Auto-detect architecture and install latest version to /usr/local/bin (requires sudo)
+ARCH=$(uname -m)
+case $ARCH in
+  x86_64) ARCH="amd64" ;;
+  aarch64) ARCH="arm64" ;;
+  armv7l) ARCH="arm64" ;;
+  *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+esac
+
+VERSION=$(curl -s https://api.github.com/repos/jaxxstorm/proxyt/releases/latest | grep tag_name | cut -d '"' -f 4 | sed 's/v//')
+curl -fsSL "https://github.com/jaxxstorm/proxyt/releases/latest/download/proxyt_${VERSION}_linux_${ARCH}.tar.gz" | sudo tar xz -C /usr/local/bin/ proxyt
+```
+
+#### Manual Download
+
+Download the latest release for your architecture:
+
+```bash
+# For x86_64/amd64
+wget https://github.com/jaxxstorm/proxyt/releases/latest/download/proxyt_$(curl -s https://api.github.com/repos/jaxxstorm/proxyt/releases/latest | grep tag_name | cut -d '"' -f 4 | sed 's/v//')_linux_amd64.tar.gz
+tar -xzf proxyt_*_linux_amd64.tar.gz
+
+# For ARM64
+wget https://github.com/jaxxstorm/proxyt/releases/latest/download/proxyt_$(curl -s https://api.github.com/repos/jaxxstorm/proxyt/releases/latest | grep tag_name | cut -d '"' -f 4 | sed 's/v//')_linux_arm64.tar.gz
+tar -xzf proxyt_*_linux_arm64.tar.gz
+
+# Make executable and move to PATH
+chmod +x proxyt
+sudo mv proxyt /usr/local/bin/
+```
+
+Or manually download from the [releases page](https://github.com/jaxxstorm/proxyt/releases).
+
+### Docker
+
+ProxyT Docker images are available on GitHub Container Registry with the following features:
+- **Minimal size**: Based on distroless images for security and efficiency
+- **Multi-architecture**: Supports both AMD64 and ARM64
+- **Non-root user**: Runs as user 65532 for security
+- **Signal handling**: Uses dumb-init as PID 1 for proper signal forwarding
+- **Pre-created directories**: Certificate directory `/certs` ready for use
+
+```bash
+# Pull the latest image
+docker pull ghcr.io/jaxxstorm/proxyt:latest
+
+# Run with automatic certificates (requires volumes for certificate storage)
+docker run -d \
+  --name proxyt \
+  -p 80:80 \
+  -p 443:443 \
+  -v proxyt-certs:/certs \
+  ghcr.io/jaxxstorm/proxyt:latest \
+  serve --domain proxy.example.com --email admin@example.com --cert-dir /certs
+
+# Run in HTTP-only mode (behind reverse proxy)
+docker run -d \
+  --name proxyt \
+  -p 8080:8080 \
+  ghcr.io/jaxxstorm/proxyt:latest \
+  serve --domain proxy.example.com --http-only --port 8080 --bind 0.0.0.0
+
+# Quick test without persistent storage (certificates won't persist)
+docker run -d \
+  --name proxyt \
+  -p 80:80 \
+  -p 443:443 \
+  ghcr.io/jaxxstorm/proxyt:latest \
+  serve --domain proxy.example.com --email admin@example.com --cert-dir /certs
+
+# With Docker Compose
+cat > docker-compose.yml << EOF
+version: '3.8'
+services:
+  proxyt:
+    image: ghcr.io/jaxxstorm/proxyt:latest
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - proxyt-certs:/certs
+    command: serve --domain proxy.example.com --email admin@example.com --cert-dir /certs
+    restart: unless-stopped
+
+volumes:
+  proxyt-certs:
+EOF
+
+docker compose up -d
+```
+
 ### From Source
 
 ```bash
@@ -22,6 +132,15 @@ go build -o proxyt .
 
 ```bash
 go install github.com/jaxxstorm/proxyt@latest
+```
+
+### Verify Installation
+
+After installation, verify ProxyT is working:
+
+```bash
+proxyt --version
+proxyt serve --help
 ```
 
 ## Usage
@@ -156,6 +275,39 @@ server {
         proxy_set_header Connection "upgrade";
     }
 }
+```
+
+### Docker Deployment
+
+#### Standalone with Let's Encrypt
+
+```bash
+# With persistent certificate storage
+docker run -d \
+  --name proxyt \
+  -p 80:80 \
+  -p 443:443 \
+  -v proxyt-certs:/certs \
+  ghcr.io/jaxxstorm/proxyt:latest \
+  serve --domain proxy.example.com --email admin@example.com --cert-dir /certs
+
+# Quick test (certificates won't persist across container restarts)
+docker run -d \
+  --name proxyt \
+  -p 80:80 \
+  -p 443:443 \
+  ghcr.io/jaxxstorm/proxyt:latest \
+  serve --domain proxy.example.com --email admin@example.com --cert-dir /certs
+```
+
+#### Behind Reverse Proxy
+
+```bash
+docker run -d \
+  --name proxyt \
+  -p 127.0.0.1:8080:8080 \
+  ghcr.io/jaxxstorm/proxyt:latest \
+  serve --domain proxy.example.com --http-only --port 8080 --bind 0.0.0.0
 ```
 
 ## Tailscale Integration
@@ -308,6 +460,11 @@ This provides detailed request/response logging including headers and routing de
 - **Certificate Storage**: Protect the certificate directory with appropriate file permissions
 - **Network Access**: Restrict access to the proxy server as needed
 - **Logging**: Debug mode logs sensitive headers; use carefully in production
+- **Docker Security**: 
+  - Images run as non-root user (65532)
+  - Based on distroless images with minimal attack surface
+  - Use dumb-init for proper signal handling
+  - Regular security updates via automated builds
 
 ## Contributing
 
