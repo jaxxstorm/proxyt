@@ -23,14 +23,16 @@ import (
 )
 
 var (
-	domain       string
-	port         string
-	httpsPort    string
-	email        string
-	certDir      string
-	issueCerts   bool
-	debug        bool
-	logger       *zap.Logger
+	domain     string
+	port       string
+	httpsPort  string
+	email      string
+	certDir    string
+	issueCerts bool
+	debug      bool
+	httpOnly   bool
+	bindAddr   string
+	logger     *zap.Logger
 )
 
 // serveCmd represents the serve command
@@ -47,15 +49,16 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 
 	serveCmd.Flags().StringVarP(&domain, "domain", "d", "", "Domain name for the proxy (required)")
-	serveCmd.Flags().StringVarP(&port, "port", "p", "80", "HTTP port for Let's Encrypt challenges")
+	serveCmd.Flags().StringVarP(&port, "port", "p", "80", "HTTP port for Let's Encrypt challenges or main port in HTTP-only mode")
 	serveCmd.Flags().StringVar(&httpsPort, "https-port", "443", "HTTPS port for the proxy")
 	serveCmd.Flags().StringVarP(&email, "email", "e", "", "Email address for Let's Encrypt registration")
-	serveCmd.Flags().StringVar(&certDir, "cert-dir", "", "Directory to store/read SSL certificates (required)")
+	serveCmd.Flags().StringVar(&certDir, "cert-dir", "", "Directory to store/read SSL certificates (required when not using --http-only)")
 	serveCmd.Flags().BoolVar(&issueCerts, "issue", true, "Automatically issue Let's Encrypt certificates")
 	serveCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug logging for all requests")
+	serveCmd.Flags().BoolVar(&httpOnly, "http-only", false, "Run in HTTP-only mode (for use behind HTTPS proxy/load balancer)")
+	serveCmd.Flags().StringVar(&bindAddr, "bind", "0.0.0.0", "Address to bind the server to")
 
 	serveCmd.MarkFlagRequired("domain")
-	serveCmd.MarkFlagRequired("cert-dir")
 }
 
 func runProxy() {
@@ -76,16 +79,22 @@ func runProxy() {
 	defer logger.Sync()
 
 	logger.Info("Starting Tailscale proxy",
-		zap.String("domain", domain))
+		zap.String("domain", domain),
+		zap.Bool("http_only", httpOnly))
 
 	if debug {
 		logger.Info("Debug logging enabled")
 	}
 
+	// Validate required flags based on mode
+	if !httpOnly && certDir == "" {
+		logger.Fatal("cert-dir is required when not using --http-only mode")
+	}
+
 	var certManager *autocert.Manager
 	var tlsConfig *tls.Config
 
-	if issueCerts {
+	if !httpOnly && issueCerts {
 		// Validate email is required for Let's Encrypt
 		if email == "" {
 			logger.Fatal("Email is required when --issue is true for Let's Encrypt registration")
@@ -104,7 +113,7 @@ func runProxy() {
 		}
 
 		logger.Info("Automatic certificate issuance enabled", zap.String("domain", domain))
-	} else {
+	} else if !httpOnly {
 		// Check if certificates exist in cert-dir
 		certFile := filepath.Join(certDir, domain+".crt")
 		keyFile := filepath.Join(certDir, domain+".key")
@@ -132,6 +141,9 @@ func runProxy() {
 	// Create a reverse proxy handler
 	reverseProxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
+			// Setup X-Forwarded headers when running behind a proxy
+			setupXForwardedHeaders(req)
+
 			// Determine the appropriate Tailscale target
 			target := getTailscaleTarget(req)
 
@@ -217,140 +229,117 @@ func runProxy() {
 		},
 	}
 
-	// Create HTTPS server with custom routing
-	httpsMux := http.NewServeMux()
+	// Create the main HTTP handler that will be used in all modes
+	mainHandler := http.NewServeMux()
 
-	// Add health check for HTTPS
-	httpsMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		logger.Info("HTTPS Health check request", zap.String("remote_addr", r.RemoteAddr))
+	// Add a health check endpoint
+	mainHandler.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		logger.Info("Health check request", zap.String("remote_addr", r.RemoteAddr))
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK - Tailscale Proxy is running"))
 	})
 
-	// Handle Tailscale control protocol upgrade specially on HTTPS
-	httpsMux.HandleFunc("/ts2021", handleTailscaleControlProtocol)
+	// Handle Tailscale control protocol upgrade specially
+	mainHandler.HandleFunc("/ts2021", handleTailscaleControlProtocol)
 
-	// Handle all other HTTPS requests with reverse proxy
-	httpsMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	// Handle all other requests by proxying them
+	mainHandler.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Don't proxy health checks
 		if r.URL.Path == "/health" {
-			logger.Info("HTTPS Health check request", zap.String("remote_addr", r.RemoteAddr))
+			logger.Info("Health check request", zap.String("remote_addr", r.RemoteAddr))
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("OK - Tailscale Proxy is running"))
 			return
 		}
 
+		// Handle Tailscale control protocol upgrade specially
 		if strings.HasPrefix(r.URL.Path, "/ts2021") {
 			handleTailscaleControlProtocol(w, r)
 			return
 		}
 
 		if debug {
-			logDebugRequest("HTTPS_HANDLER", r)
+			logDebugRequest("MAIN_HANDLER", r)
 		}
-		logger.Info("HTTPS request - proxying",
+		logger.Info("Request - proxying",
 			zap.String("remote_addr", r.RemoteAddr),
 			zap.String("host", r.Host),
 			zap.String("path", r.URL.Path))
 		reverseProxy.ServeHTTP(w, r)
 	})
 
-	httpsServer := &http.Server{
-		Addr:      ":" + httpsPort,
-		Handler:   httpsMux,
-		TLSConfig: tlsConfig,
-	}
+	var servers []*http.Server
 
-	var httpServer *http.Server
-
-	if issueCerts {
-		// Create HTTP server that handles both Let's Encrypt challenges and proxy requests
-		httpMux := http.NewServeMux()
-
-		// Handle Let's Encrypt challenges
-		httpMux.Handle("/.well-known/", certManager.HTTPHandler(nil))
-
-		// Add a health check endpoint
-		httpMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-			logger.Info("HTTP Health check request", zap.String("remote_addr", r.RemoteAddr))
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK - Tailscale Proxy is running"))
-		})
-
-		// Handle all other requests by proxying them
-		httpMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			// Don't proxy ACME challenges
-			if strings.HasPrefix(r.URL.Path, "/.well-known/") {
-				certManager.HTTPHandler(nil).ServeHTTP(w, r)
-				return
-			}
-
-			// Don't proxy health checks
-			if r.URL.Path == "/health" {
-				logger.Info("HTTP Health check request", zap.String("remote_addr", r.RemoteAddr))
-				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("OK - Tailscale Proxy is running"))
-				return
-			}
-
-			// Handle Tailscale control protocol upgrade specially
-			if strings.HasPrefix(r.URL.Path, "/ts2021") {
-				handleTailscaleControlProtocol(w, r)
-				return
-			}
-
-			if debug {
-				logDebugRequest("HTTP_HANDLER", r)
-			}
-			logger.Info("HTTP request - proxying",
-				zap.String("remote_addr", r.RemoteAddr),
-				zap.String("host", r.Host),
-				zap.String("path", r.URL.Path))
-			reverseProxy.ServeHTTP(w, r)
-		})
-
-		httpServer = &http.Server{
-			Addr:    ":" + port,
-			Handler: httpMux,
+	if httpOnly {
+		// HTTP-only mode for use behind HTTPS proxy/load balancer
+		httpServer := &http.Server{
+			Addr:    bindAddr + ":" + port,
+			Handler: mainHandler,
 		}
+		servers = append(servers, httpServer)
+
+		logger.Info("HTTP-only mode enabled - running behind HTTPS proxy",
+			zap.String("bind_addr", bindAddr),
+			zap.String("port", port))
 	} else {
-		// Create a mux for non-cert-issuing mode
-		httpMux := http.NewServeMux()
+		// Full HTTPS mode with optional HTTP for Let's Encrypt
 
-		// Add a health check endpoint
-		httpMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-			logger.Info("HTTP Health check request", zap.String("remote_addr", r.RemoteAddr))
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK - Tailscale Proxy is running"))
-		})
+		// Create HTTPS server
+		httpsServer := &http.Server{
+			Addr:      bindAddr + ":" + httpsPort,
+			Handler:   mainHandler,
+			TLSConfig: tlsConfig,
+		}
+		servers = append(servers, httpsServer)
 
-		// Handle all other requests by proxying them
-		httpMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/health" {
-				logger.Info("HTTP Health check request", zap.String("remote_addr", r.RemoteAddr))
-				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("OK - Tailscale Proxy is running"))
-				return
+		var httpServer *http.Server
+
+		if issueCerts {
+			// Create HTTP server that handles Let's Encrypt challenges
+			httpMux := http.NewServeMux()
+
+			// Handle Let's Encrypt challenges
+			httpMux.Handle("/.well-known/", certManager.HTTPHandler(nil))
+
+			// Redirect all other HTTP requests to HTTPS
+			httpMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				// Don't redirect ACME challenges
+				if strings.HasPrefix(r.URL.Path, "/.well-known/") {
+					certManager.HTTPHandler(nil).ServeHTTP(w, r)
+					return
+				}
+
+				// Redirect to HTTPS
+				httpsURL := "https://" + r.Host + r.RequestURI
+				if httpsPort != "443" {
+					httpsURL = "https://" + domain + ":" + httpsPort + r.RequestURI
+				}
+				http.Redirect(w, r, httpsURL, http.StatusMovedPermanently)
+			})
+
+			httpServer = &http.Server{
+				Addr:    bindAddr + ":" + port,
+				Handler: httpMux,
 			}
+		} else {
+			// Simple HTTP server that redirects to HTTPS
+			httpMux := http.NewServeMux()
+			httpMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				httpsURL := "https://" + r.Host + r.RequestURI
+				if httpsPort != "443" {
+					httpsURL = "https://" + domain + ":" + httpsPort + r.RequestURI
+				}
+				http.Redirect(w, r, httpsURL, http.StatusMovedPermanently)
+			})
 
-			// Handle Tailscale control protocol upgrade specially
-			if strings.HasPrefix(r.URL.Path, "/ts2021") {
-				handleTailscaleControlProtocol(w, r)
-				return
+			httpServer = &http.Server{
+				Addr:    bindAddr + ":" + port,
+				Handler: httpMux,
 			}
+		}
 
-			if debug {
-				logDebugRequest("HTTP_HANDLER", r)
-			}
-			logger.Info("HTTP request - proxying",
-				zap.String("remote_addr", r.RemoteAddr),
-				zap.String("host", r.Host),
-				zap.String("path", r.URL.Path))
-			reverseProxy.ServeHTTP(w, r)
-		})
-
-		httpServer = &http.Server{
-			Addr:    ":" + port,
-			Handler: httpMux,
+		if httpServer != nil {
+			servers = append(servers, httpServer)
 		}
 	}
 
@@ -358,25 +347,35 @@ func runProxy() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
-	// Start HTTP server (for Let's Encrypt challenges and/or proxying)
-	go func() {
-		if issueCerts {
-			logger.Info("Starting HTTP server for Let's Encrypt challenges and proxy requests", zap.String("port", port))
-		} else {
-			logger.Info("Starting HTTP server for proxy requests", zap.String("port", port))
-		}
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatal("HTTP server failed", zap.Error(err))
-		}
-	}()
-
-	// Start HTTPS server
-	go func() {
-		logger.Info("Starting HTTPS proxy server", zap.String("port", httpsPort), zap.String("domain", domain))
-		if err := httpsServer.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-			logger.Fatal("HTTPS server failed", zap.Error(err))
-		}
-	}()
+	// Start all servers
+	for _, server := range servers {
+		go func(srv *http.Server) {
+			if srv.TLSConfig != nil {
+				// HTTPS server
+				logger.Info("Starting HTTPS proxy server",
+					zap.String("addr", srv.Addr),
+					zap.String("domain", domain))
+				if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+					logger.Fatal("HTTPS server failed", zap.Error(err))
+				}
+			} else {
+				// HTTP server
+				if httpOnly {
+					logger.Info("Starting HTTP proxy server (behind HTTPS proxy)",
+						zap.String("addr", srv.Addr))
+				} else if issueCerts {
+					logger.Info("Starting HTTP server for Let's Encrypt challenges and redirects",
+						zap.String("addr", srv.Addr))
+				} else {
+					logger.Info("Starting HTTP server for HTTPS redirects",
+						zap.String("addr", srv.Addr))
+				}
+				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					logger.Fatal("HTTP server failed", zap.Error(err))
+				}
+			}
+		}(server)
+	}
 
 	// Wait for interrupt signal
 	<-stop
@@ -386,13 +385,10 @@ func runProxy() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Shutdown both servers
-	if err := httpsServer.Shutdown(ctx); err != nil {
-		logger.Error("HTTPS server shutdown error", zap.Error(err))
-	}
-	if httpServer != nil {
-		if err := httpServer.Shutdown(ctx); err != nil {
-			logger.Error("HTTP server shutdown error", zap.Error(err))
+	// Shutdown all servers
+	for _, server := range servers {
+		if err := server.Shutdown(ctx); err != nil {
+			logger.Error("Server shutdown error", zap.String("addr", server.Addr), zap.Error(err))
 		}
 	}
 
@@ -644,4 +640,30 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// setupXForwardedHeaders sets up X-Forwarded headers when running behind a proxy
+func setupXForwardedHeaders(req *http.Request) {
+	// If running behind a proxy, preserve the original client information
+	if httpOnly {
+		// Trust the X-Forwarded-For header if present, otherwise use RemoteAddr
+		if xff := req.Header.Get("X-Forwarded-For"); xff == "" {
+			// Extract IP from RemoteAddr (format: "IP:port")
+			clientIP := req.RemoteAddr
+			if idx := strings.LastIndex(clientIP, ":"); idx != -1 {
+				clientIP = clientIP[:idx]
+			}
+			req.Header.Set("X-Forwarded-For", clientIP)
+		}
+
+		// Set X-Forwarded-Proto if not already present
+		if req.Header.Get("X-Forwarded-Proto") == "" {
+			req.Header.Set("X-Forwarded-Proto", "https")
+		}
+
+		// Set X-Forwarded-Host if not already present
+		if req.Header.Get("X-Forwarded-Host") == "" {
+			req.Header.Set("X-Forwarded-Host", req.Host)
+		}
+	}
 }

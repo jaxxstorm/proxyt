@@ -54,17 +54,109 @@ proxyt serve \
   --debug
 ```
 
+### Behind HTTPS Reverse Proxy (Tailscale Funnel, Pangolin, etc.)
+
+When deploying behind an HTTPS reverse proxy that handles TLS termination:
+
+```bash
+proxyt serve \
+  --domain proxy.example.com \
+  --http-only \
+  --port 8080 \
+  --bind 127.0.0.1
+```
+
+This mode is perfect for:
+- **Tailscale Funnel**: Expose via `tailscale funnel 8080`
+- **Pangolin**: Let Pangolin handle TLS termination 
+- **Nginx/Apache**: Traditional reverse proxy setup
+
 ## Configuration Options
 
 | Flag | Description | Default | Required |
 |------|-------------|---------|----------|
 | `--domain` | Your custom domain name | - | Yes |
 | `--email` | Email for Let's Encrypt registration | - | Yes (when --issue=true) |
-| `--cert-dir` | Directory for SSL certificates | - | Yes |
+| `--cert-dir` | Directory for SSL certificates | - | Yes (when not --http-only) |
 | `--issue` | Auto-issue Let's Encrypt certificates | `true` | No |
-| `--port` | HTTP port for Let's Encrypt challenges | `80` | No |
+| `--port` | HTTP port for challenges or main port in HTTP-only mode | `80` | No |
 | `--https-port` | HTTPS port for the proxy | `443` | No |
 | `--debug` | Enable debug logging | `false` | No |
+| `--http-only` | Run behind HTTPS proxy (no TLS termination) | `false` | No |
+| `--bind` | Address to bind the server to | `0.0.0.0` | No |
+
+## Deployment Scenarios
+
+### Standalone with Let's Encrypt (Default)
+
+Direct deployment with automatic certificate management:
+
+```bash
+proxyt serve --domain proxy.example.com --email admin@example.com --cert-dir /etc/proxyt/certs
+```
+
+**Requirements:**
+- Domain points to your server
+- Ports 80 and 443 accessible from internet
+- Valid email for Let's Encrypt
+
+### Behind Tailscale Funnel
+
+Deploy ProxyT on your Tailscale network and expose via Funnel:
+
+```bash
+# Start ProxyT in HTTP-only mode
+proxyt serve --domain proxy.tailXXXX.ts.net --http-only --port 8080 --bind 127.0.0.1
+
+# In another terminal, expose via Tailscale Funnel
+tailscale funnel 8080
+```
+
+**Benefits:**
+- No need for public IP or port forwarding
+- Automatic TLS via Tailscale
+- Only accessible via your Tailscale network initially
+- Can be made publicly accessible via Funnel
+
+### Behind Pangolin or Similar Proxy
+
+When using a service that provides TLS termination:
+
+```bash
+proxyt serve --domain proxy.example.com --http-only --port 3000
+```
+
+Then configure your proxy to forward `https://proxy.example.com` to `http://localhost:3000`.
+
+### Behind Traditional Reverse Proxy (Nginx/Apache)
+
+```bash
+proxyt serve --domain proxy.example.com --http-only --port 8080 --bind 127.0.0.1
+```
+
+**Nginx configuration example:**
+```nginx
+server {
+    listen 443 ssl;
+    server_name proxy.example.com;
+    
+    ssl_certificate /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+    
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # Important for Tailscale protocol upgrades
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
 
 ## Tailscale Integration
 
@@ -188,6 +280,17 @@ Structured JSON logging (production) or console logging (debug mode):
 - Enable debug mode (`--debug`) to see detailed request logs
 - Check that Tailscale client can resolve your domain
 - Verify proxy can reach `*.tailscale.com` domains
+
+**HTTP-Only Mode Issues**
+- Ensure your reverse proxy is properly forwarding X-Forwarded headers
+- Verify the reverse proxy supports HTTP/1.1 upgrades for `/ts2021` endpoints
+- Check that the bind address and port are correct
+- Confirm your reverse proxy is handling TLS termination properly
+
+**Protocol Upgrade Failures**
+- Ensure reverse proxy supports WebSocket/HTTP upgrades
+- Check that `Connection: upgrade` and `Upgrade` headers are forwarded
+- Verify no intermediate proxies are stripping upgrade headers
 
 ### Debug Mode
 
