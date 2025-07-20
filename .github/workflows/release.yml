@@ -1,0 +1,29 @@
+permissions:
+  contents: write
+
+name: release
+on:
+  push:
+    tags:
+    - v*.*.*
+    - '!v*.*.*-**'
+
+jobs:    
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Unshallow clone
+        run: git fetch --prune --unshallow
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          args: release --clean
+          version: latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
