@@ -9,8 +9,6 @@ CHANGELOG.md
 *.md
 
 # Build artifacts
-proxyt
-proxyt-*
 dist/
 
 # Development files
