@@ -40,6 +40,9 @@ kos:
     tags:
       - latest
       - "{{ .Tag }}"
+    bare: true
+    preserve_import_paths: false
+    base_import_paths: false
     labels:
       "org.opencontainers.image.title": "{{ .ProjectName }}"
       "org.opencontainers.image.description": "Tailscale login server proxy"
