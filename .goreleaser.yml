@@ -30,8 +30,8 @@ changelog:
 
 dockers:
   - image_templates:
-      - "ghcr.io/jaxxstorm/proxyt:latest"
-      - "ghcr.io/jaxxstorm/proxyt:{{ .Tag }}"
+      - "ghcr.io/jaxxstorm/proxyt:{{ .Tag }}-amd64"
+      - "ghcr.io/jaxxstorm/proxyt:latest-amd64"
     dockerfile: Dockerfile
     use: buildx
     build_flag_templates:
@@ -52,6 +52,7 @@ dockers:
       - LICENSE
   - image_templates:
       - "ghcr.io/jaxxstorm/proxyt:{{ .Tag }}-arm64"
+      - "ghcr.io/jaxxstorm/proxyt:latest-arm64"
     dockerfile: Dockerfile
     use: buildx
     build_flag_templates:
@@ -70,16 +71,6 @@ dockers:
       - proxyt
     extra_files:
       - LICENSE
-
-docker_manifests:
-  - name_template: "ghcr.io/jaxxstorm/proxyt:{{ .Tag }}"
-    image_templates:
-      - "ghcr.io/jaxxstorm/proxyt:{{ .Tag }}-arm64"
-      - "ghcr.io/jaxxstorm/proxyt:latest"
-  - name_template: "ghcr.io/jaxxstorm/proxyt:latest"
-    image_templates:
-      - "ghcr.io/jaxxstorm/proxyt:{{ .Tag }}-arm64"
-      - "ghcr.io/jaxxstorm/proxyt:latest"
 
 brews:
   - name: proxyt
@@ -103,3 +94,13 @@ scoops:
       email: bot@leebriggs.co.uk
     description: Easily proxy the Tailscale login API for blocked networks.
     homepage: https://github.com/jaxxstorm/proxyt
+
+docker_manifests:
+  - name_template: "ghcr.io/jaxxstorm/proxyt:{{ .Tag }}"
+    image_templates:
+      - "ghcr.io/jaxxstorm/proxyt:{{ .Tag }}-amd64"
+      - "ghcr.io/jaxxstorm/proxyt:{{ .Tag }}-arm64"
+  - name_template: "ghcr.io/jaxxstorm/proxyt:latest"
+    image_templates:
+      - "ghcr.io/jaxxstorm/proxyt:latest-amd64"
+      - "ghcr.io/jaxxstorm/proxyt:latest-arm64"
