@@ -30,6 +30,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ko-build/setup-ko@v0.8
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
