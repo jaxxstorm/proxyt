@@ -1,5 +1,5 @@
 # Builder stage for dumb-init and directory setup
-FROM alpine:3.19 AS builder
+FROM alpine:3.22 AS builder
 RUN apk add --no-cache dumb-init
 # Create the certs directory with proper ownership
 RUN mkdir -p /certs && chown 65532:65532 /certs
