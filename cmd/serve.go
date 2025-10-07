@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"golang.org/x/crypto/acme/autocert"
@@ -59,9 +60,33 @@ func init() {
 	serveCmd.Flags().StringVar(&bindAddr, "bind", "0.0.0.0", "Address to bind the server to")
 
 	serveCmd.MarkFlagRequired("domain")
+
+	// Bind environment variables
+	viper.SetEnvPrefix("PROXYT")
+	viper.AutomaticEnv()
+	viper.BindPFlag("domain", serveCmd.Flags().Lookup("domain"))
+	viper.BindPFlag("port", serveCmd.Flags().Lookup("port"))
+	viper.BindPFlag("https-port", serveCmd.Flags().Lookup("https-port"))
+	viper.BindPFlag("email", serveCmd.Flags().Lookup("email"))
+	viper.BindPFlag("cert-dir", serveCmd.Flags().Lookup("cert-dir"))
+	viper.BindPFlag("issue", serveCmd.Flags().Lookup("issue"))
+	viper.BindPFlag("debug", serveCmd.Flags().Lookup("debug"))
+	viper.BindPFlag("http-only", serveCmd.Flags().Lookup("http-only"))
+	viper.BindPFlag("bind", serveCmd.Flags().Lookup("bind"))
 }
 
 func runProxy() {
+	// Read values from viper (supports both flags and environment variables)
+	domain = viper.GetString("domain")
+	port = viper.GetString("port")
+	httpsPort = viper.GetString("https-port")
+	email = viper.GetString("email")
+	certDir = viper.GetString("cert-dir")
+	issueCerts = viper.GetBool("issue")
+	debug = viper.GetBool("debug")
+	httpOnly = viper.GetBool("http-only")
+	bindAddr = viper.GetString("bind")
+
 	// Initialize zap logger
 	var err error
 	if debug {
@@ -87,6 +112,9 @@ func runProxy() {
 	}
 
 	// Validate required flags based on mode
+	if domain == "" {
+		logger.Fatal("domain is required")
+	}
 	if !httpOnly && certDir == "" {
 		logger.Fatal("cert-dir is required when not using --http-only mode")
 	}
