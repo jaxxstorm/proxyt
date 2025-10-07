@@ -59,11 +59,10 @@ func init() {
 	serveCmd.Flags().BoolVar(&httpOnly, "http-only", false, "Run in HTTP-only mode (for use behind HTTPS proxy/load balancer)")
 	serveCmd.Flags().StringVar(&bindAddr, "bind", "0.0.0.0", "Address to bind the server to")
 
-	serveCmd.MarkFlagRequired("domain")
-
 	// Bind environment variables
 	viper.SetEnvPrefix("PROXYT")
 	viper.AutomaticEnv()
+	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
 	viper.BindPFlag("domain", serveCmd.Flags().Lookup("domain"))
 	viper.BindPFlag("port", serveCmd.Flags().Lookup("port"))
 	viper.BindPFlag("https-port", serveCmd.Flags().Lookup("https-port"))
