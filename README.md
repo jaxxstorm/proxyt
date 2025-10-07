@@ -8,6 +8,8 @@ Tailscale is pretty good at forging connections in lots of environments, but if 
 
 This project builds a very simple Go proxy which can be hosted externally and will proxy requests to Tailscale's control plane.
 
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/proxyt?referralCode=ftkvtR&utm_medium=integration&utm_source=template&utm_campaign=generic)
+
 ## Installation
 
 ### macOS (via Homebrew)
@@ -192,17 +194,19 @@ This mode is perfect for:
 
 ## Configuration Options
 
-| Flag | Description | Default | Required |
-|------|-------------|---------|----------|
-| `--domain` | Your custom domain name | - | Yes |
-| `--email` | Email for Let's Encrypt registration | - | Yes (when --issue=true) |
-| `--cert-dir` | Directory for SSL certificates | - | Yes (when not --http-only) |
-| `--issue` | Auto-issue Let's Encrypt certificates | `true` | No |
-| `--port` | HTTP port for challenges or main port in HTTP-only mode | `80` | No |
-| `--https-port` | HTTPS port for the proxy | `443` | No |
-| `--debug` | Enable debug logging | `false` | No |
-| `--http-only` | Run behind HTTPS proxy (no TLS termination) | `false` | No |
-| `--bind` | Address to bind the server to | `0.0.0.0` | No |
+All flags can be set via environment variables with the `PROXYT_` prefix (e.g., `PROXYT_DOMAIN`, `PROXYT_HTTP_ONLY`).
+
+| Flag | Environment Variable | Description | Default | Required |
+|------|---------------------|-------------|---------|----------|
+| `--domain` | `PROXYT_DOMAIN` | Your custom domain name | - | Yes |
+| `--email` | `PROXYT_EMAIL` | Email for Let's Encrypt registration | - | Yes (when --issue=true) |
+| `--cert-dir` | `PROXYT_CERT_DIR` | Directory for SSL certificates | - | Yes (when not --http-only) |
+| `--issue` | `PROXYT_ISSUE` | Auto-issue Let's Encrypt certificates | `true` | No |
+| `--port` | `PROXYT_PORT` | HTTP port for challenges or main port in HTTP-only mode | `80` | No |
+| `--https-port` | `PROXYT_HTTPS_PORT` | HTTPS port for the proxy | `443` | No |
+| `--debug` | `PROXYT_DEBUG` | Enable debug logging | `false` | No |
+| `--http-only` | `PROXYT_HTTP_ONLY` | Run behind HTTPS proxy (no TLS termination) | `false` | No |
+| `--bind` | `PROXYT_BIND` | Address to bind the server to | `0.0.0.0` | No |
 
 ## Deployment Scenarios
 
@@ -236,6 +240,7 @@ tailscale funnel 8080
 - Automatic TLS via Tailscale
 - Only accessible via your Tailscale network initially
 - Can be made publicly accessible via Funnel
+
 
 ### Behind Pangolin or Similar Proxy
 
