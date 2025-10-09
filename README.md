@@ -15,35 +15,19 @@ Proxyt allows you to host a proxy to the Tailscale control plane which can be us
 
 ## 📖 Documentation
 
-Docs are available in the [docs](./docs) directory or at https://www.proxyt.io
+**Full documentation:** [proxyt.io](https://proxyt.io)
 
-## Installation
+### Quick Links
 
-See [Installation](installation.md)
+- 📦 [Installation](https://proxyt.io/#/installation) - Install ProxyT on your platform
+- ⚙️ [Configuration](https://proxyt.io/#/configuration) - Configure ProxyT with flags or environment variables
+- 🚀 [Deployment](https://proxyt.io/#/deployment) - Deploy to Railway, Docker, or your own server
+- 🔧 [Tailscale Setup](https://proxyt.io/#/clients) - Configure Tailscale clients to use ProxyT
+- 🛠️ [Troubleshooting](https://proxyt.io/#/troubleshooting) - Common issues and solutions
+- 🔒 [Security](https://proxyt.io/#/security) - Security considerations and best practices
+- 🏗️ [Architecture](https://proxyt.io/#/architecture) - How ProxyT works under the hood
 
-## Configuring Proxyt
-
-See [Configuration](configuration.md)
-
-## Hosting
-
-For some examples of different ways to host Proxyt, see [Hosting](hosting.md)
-
-## Clients
-
-For information about how to configure clients, see [Clients](clients.md)
-
-## Troubleshooting
-
-See [Troubleshooting](troubleshooting.md)
-
-## Security
-
-See [Security](security.md)
-
-## Architecture
-
-See [Architecture](architecture.md)
+> 💡 **Browsing on GitHub?** The documentation source files are in the [`docs/`](./docs) directory
 
 ## Contributing
 
