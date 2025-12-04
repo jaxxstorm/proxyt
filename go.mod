@@ -7,7 +7,7 @@ toolchain go1.25.0
 require (
 	github.com/charmbracelet/fang v0.3.0
 	github.com/jaxxstorm/vers v0.0.3
-	github.com/spf13/cobra v1.9.1
+	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.41.0
