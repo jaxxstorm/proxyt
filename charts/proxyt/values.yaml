@@ -34,9 +34,9 @@ proxyt:
   # Automatically issue Let's Encrypt certificates
   issue: true
   # HTTP port for Let's Encrypt challenges or main port in HTTP-only mode
-  port: 80
+  port: 8080
   # HTTPS port for the proxy
-  httpsPort: 443
+  httpsPort: 8443
   # Address to bind the server to
   bind: "0.0.0.0"
   # Use existing secret for sensitive configuration (optional)

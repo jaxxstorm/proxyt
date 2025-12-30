@@ -36,7 +36,7 @@ helm install proxyt oci://ghcr.io/jaxxstorm/charts/proxyt \
 ### 3. With cert-manager
 
 ```bash
-helm install proxyt oci://ghcr.io/masterbpro/charts/proxyt \
+helm install proxyt oci://ghcr.io/jaxxstorm/charts/proxyt \
   --set proxyt.domain=proxy.example.com \
   --set certManager.enabled=true \
   --set certManager.issuer.name=letsencrypt-production
@@ -45,13 +45,13 @@ helm install proxyt oci://ghcr.io/masterbpro/charts/proxyt \
 ### 4. Production Setup
 
 ```bash
-helm install proxyt oci://ghcr.io/masterbpro/charts/proxyt -f values-production.yaml
+helm install proxyt oci://ghcr.io/jaxxstorm/charts/proxyt -f values-production.yaml
 ```
 
 ### 5. From GitHub Release
 
 ```bash
-helm install proxyt https://github.com/masterbpro/proxyt/releases/download/proxyt-1.0.1/proxyt-1.0.1.tgz \
+helm install proxyt https://github.com/jaxxstorm/proxyt/releases/download/proxyt-1.0.2/proxyt-1.0.2.tgz \
   --set proxyt.domain=proxy.example.com \
   --set proxyt.email=admin@example.com
 ```
@@ -127,7 +127,7 @@ curl http://localhost:8080/health
 ## Upgrade
 
 ```bash
-helm upgrade proxyt oci://ghcr.io/masterbpro/charts/proxyt \
+helm upgrade proxyt oci://ghcr.io/jaxxstorm/charts/proxyt \
   --set proxyt.domain=proxy.example.com \
   --set proxyt.email=admin@example.com
 ```
