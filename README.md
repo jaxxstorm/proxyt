@@ -13,6 +13,27 @@ However, some networks block the Tailscale _control plane_ (ie, the tailscale.co
 
 Proxyt allows you to host a proxy to the Tailscale control plane which can be used by clients. You can host Proxyt anywhere, register your own domain or even expose it via [Funnel](https://tailscale.com/kb/1223/funnel) giving you a reliable way of accessing the Tailscale control plane to authenticate clients.
 
+## 🚀 Quick Start
+
+### Docker
+```bash
+docker run -d -p 80:80 -p 443:443 -v proxyt-certs:/certs \
+  ghcr.io/jaxxstorm/proxyt:latest \
+  serve --domain proxy.example.com --email admin@example.com --cert-dir /certs
+```
+
+### Kubernetes (Helm)
+```bash
+helm install proxyt oci://ghcr.io/jaxxstorm/charts/proxyt \
+  --set proxyt.domain=proxy.example.com \
+  --set proxyt.email=admin@example.com
+```
+
+### Configure Tailscale Client
+```bash
+tailscale login --login-server https://proxy.example.com
+```
+
 ## 📖 Documentation
 
 **Full documentation:** [proxyt.io](https://proxyt.io)

@@ -1,0 +1,90 @@
+🎉 ProxyT has been successfully deployed!
+
+📋 Release Information:
+   Name:      {{ .Release.Name }}
+   Namespace: {{ .Release.Namespace }}
+   Version:   {{ .Chart.Version }}
+
+🌐 Configuration:
+   Domain:     {{ .Values.proxyt.domain }}
+   HTTP Only:  {{ .Values.proxyt.httpOnly }}
+   Debug Mode: {{ .Values.proxyt.debug }}
+   {{- if .Values.certManager.enabled }}
+   Cert Manager: Enabled ({{ .Values.certManager.issuer.kind }}/{{ .Values.certManager.issuer.name }})
+   {{- end }}
+
+🔗 Access Information:
+{{- if .Values.ingress.enabled }}
+{{- range $host := .Values.ingress.hosts }}
+  {{- range .paths }}
+  https://{{ $host.host }}{{ .path }}
+  {{- end }}
+{{- end }}
+
+📝 Configure your Tailscale clients:
+   tailscale login --login-server https://{{ (index .Values.ingress.hosts 0).host }}
+
+{{- else if contains "LoadBalancer" .Values.service.type }}
+  
+  ⏳ Waiting for LoadBalancer IP...
+     Run: kubectl get svc --namespace {{ .Release.Namespace }} {{ include "proxyt.fullname" . }} -w
+
+  Once available, get the IP:
+     export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "proxyt.fullname" . }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+     echo "ProxyT URL: https://$SERVICE_IP"
+
+📝 Configure your Tailscale clients:
+   tailscale login --login-server https://{{ .Values.proxyt.domain }}
+
+{{- else if contains "ClusterIP" .Values.service.type }}
+
+  🔧 Port-forward to access locally:
+     kubectl port-forward --namespace {{ .Release.Namespace }} svc/{{ include "proxyt.fullname" . }} 8080:{{ .Values.service.ports.http.port }}
+     
+  Then access at: http://localhost:8080/health
+
+📝 Configure your Tailscale clients:
+   tailscale login --login-server https://{{ .Values.proxyt.domain }}
+
+{{- end }}
+
+🔍 Health Check:
+   curl {{ if not .Values.proxyt.httpOnly }}https{{ else }}http{{ end }}://{{ .Values.proxyt.domain }}/health
+
+📊 View Logs:
+   kubectl logs --namespace {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "proxyt.name" . }} -f
+
+🔐 Security Notes:
+   - Never use another user's ProxyT instance
+   - Always use your own self-hosted instance
+   - Protect certificate directories with appropriate permissions
+   {{- if .Values.proxyt.debug }}
+   ⚠️  DEBUG MODE IS ENABLED - Sensitive headers are being logged!
+   {{- end }}
+
+📚 Documentation:
+   - Full docs: https://proxyt.io
+   - GitHub: https://github.com/jaxxstorm/proxyt
+   - Issues: https://github.com/jaxxstorm/proxyt/issues
+
+{{- if not .Values.proxyt.domain }}
+
+⚠️  WARNING: proxyt.domain is not set!
+   Please configure the domain in your values.yaml:
+   
+   proxyt:
+     domain: "proxy.example.com"
+     email: "admin@example.com"
+
+{{- end }}
+
+{{- if and (not .Values.proxyt.email) (not .Values.proxyt.existingSecret) (not .Values.proxyt.httpOnly) .Values.proxyt.issue }}
+
+⚠️  WARNING: proxyt.email is not set!
+   Email is required for Let's Encrypt certificate issuance.
+   Please configure it in your values.yaml:
+   
+   proxyt:
+     email: "admin@example.com"
+
+{{- end }}

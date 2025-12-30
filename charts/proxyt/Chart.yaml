@@ -1,0 +1,48 @@
+apiVersion: v2
+name: proxyt
+description: A lightweight proxy for the Tailscale control plane that enables Tailscale access when the control plane is blocked
+
+type: application
+
+version: 1.0.2
+
+appVersion: "1.0.0"
+
+keywords:
+  - tailscale
+  - proxy
+  - vpn
+  - networking
+  - control-plane
+
+home: https://proxyt.io
+
+sources:
+  - https://github.com/jaxxstorm/proxyt
+
+maintainers:
+  - name: jaxxstorm
+    url: https://github.com/jaxxstorm
+  - name: masterbpro
+    url: https://github.com/masterbpro
+
+icon: https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/tailscale-light.svg
+
+annotations:
+  artifacthub.io/changes: |
+    - kind: added
+      description: ProxyT application configuration support
+    - kind: added
+      description: ConfigMap and Secret templates
+    - kind: added
+      description: Enhanced security contexts
+    - kind: added
+      description: Multi-port service support
+    - kind: added
+      description: PodDisruptionBudget support
+    - kind: added
+      description: cert-manager integration
+    - kind: fixed
+      description: Corrected Docker image repository name
+    - kind: fixed
+      description: Health check endpoints now use /health

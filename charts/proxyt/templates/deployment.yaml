@@ -1,0 +1,133 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "proxyt.fullname" . }}
+  labels:
+    {{- include "proxyt.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "proxyt.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "proxyt.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "proxyt.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "serve"
+            - "--domain={{ .Values.proxyt.domain }}"
+            - "--http-only={{ .Values.proxyt.httpOnly }}"
+            - "--debug={{ .Values.proxyt.debug }}"
+            - "--port={{ .Values.proxyt.port }}"
+            - "--https-port={{ .Values.proxyt.httpsPort }}"
+            - "--bind={{ .Values.proxyt.bind }}"
+            {{- if and .Values.proxyt.email (not .Values.proxyt.httpOnly) }}
+            - "--email={{ .Values.proxyt.email }}"
+            {{- end }}
+            {{- if not .Values.proxyt.httpOnly }}
+            - "--cert-dir={{ .Values.proxyt.certDir }}"
+            - "--issue={{ .Values.proxyt.issue }}"
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.proxyt.port }}
+              protocol: TCP
+            {{- if not .Values.proxyt.httpOnly }}
+            - name: https
+              containerPort: {{ .Values.proxyt.httpsPort }}
+              protocol: TCP
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "proxyt.fullname" . }}
+          env:
+            {{- if .Values.proxyt.existingSecret }}
+            - name: PROXYT_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.proxyt.existingSecret }}
+                  key: {{ .Values.proxyt.existingSecretEmailKey }}
+            {{- else if .Values.proxyt.email }}
+            - name: PROXYT_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "proxyt.fullname" . }}
+                  key: email
+            {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            {{- if .Values.certManager.enabled }}
+            - name: certs
+              mountPath: {{ .Values.proxyt.certDir }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.volumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        {{- if .Values.certManager.enabled }}
+        - name: certs
+          secret:
+            secretName: {{ include "proxyt.fullname" . }}-tls
+        {{- end }}
+        {{- with .Values.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

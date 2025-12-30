@@ -1,0 +1,22 @@
+{{- if .Values.certManager.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "proxyt.fullname" . }}
+  labels:
+    {{- include "proxyt.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "proxyt.fullname" . }}-tls
+  duration: {{ .Values.certManager.certificate.duration }}
+  renewBefore: {{ .Values.certManager.certificate.renewBefore }}
+  commonName: {{ .Values.proxyt.domain }}
+  dnsNames:
+    - {{ .Values.proxyt.domain }}
+    {{- range .Values.certManager.certificate.dnsNames }}
+    - {{ . }}
+    {{- end }}
+  issuerRef:
+    name: {{ .Values.certManager.issuer.name }}
+    kind: {{ .Values.certManager.issuer.kind }}
+{{- end }}
+
