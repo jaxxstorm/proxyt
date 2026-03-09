@@ -23,6 +23,8 @@ github.com/charmbracelet/fang v0.3.0 h1:Be6TB+ExS8VWizTQRJgjqbJBudKrmVUet65xmFPG
 github.com/charmbracelet/fang v0.3.0/go.mod h1:b0ZfEXZeBds0I27/wnTfnv2UVigFDXHhrFNwQztfA0M=
 github.com/charmbracelet/fang v0.4.4 h1:G4qKxF6or/eTPgmAolwPuRNyuci3hTUGGX1rj1YkHJY=
 github.com/charmbracelet/fang v0.4.4/go.mod h1:P5/DNb9DddQ0Z0dbc0P3ol4/ix5Po7Ofr2KMBfAqoCo=
+github.com/charmbracelet/fang v1.0.0 h1:jESBY40agJOlLYnnv9jE0mLqDGTxEk0hkOnx7YGyRlQ=
+github.com/charmbracelet/fang v1.0.0/go.mod h1:P5/DNb9DddQ0Z0dbc0P3ol4/ix5Po7Ofr2KMBfAqoCo=
 github.com/charmbracelet/lipgloss/v2 v2.0.0-beta.2 h1:vq2enzx1Hr3UenVefpPEf+E2xMmqtZoSHhx8IE+V8ug=
 github.com/charmbracelet/lipgloss/v2 v2.0.0-beta.2/go.mod h1:EJWvaCrhOhNGVZMvcjc0yVryl4qqpMs8tz0r9WyEkdQ=
 github.com/charmbracelet/ultraviolet v0.0.0-20251106190538-99ea45596692 h1:r/3jQZ1LjWW6ybp8HHfhrKrwHIWiJhUuY7wwYIWZulQ=
