@@ -6,8 +6,10 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -16,24 +18,32 @@ import (
 	"syscall"
 	"time"
 
+	log "github.com/jaxxstorm/log"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 	"golang.org/x/crypto/acme/autocert"
 )
 
 var (
-	domain     string
-	port       string
-	httpsPort  string
-	email      string
-	certDir    string
-	issueCerts bool
-	debug      bool
-	httpOnly   bool
-	bindAddr   string
-	logger     *zap.Logger
+	domain             string
+	port               string
+	httpsPort          string
+	email              string
+	certDir            string
+	issueCerts         bool
+	debug              bool
+	httpOnly           bool
+	bindAddr           string
+	logger             *log.Logger
+	resolveProxyTarget = func(target string) *url.URL {
+		return &url.URL{
+			Scheme: "https",
+			Host:   target,
+		}
+	}
+	dialControlPlane = func(network, addr string, config *tls.Config) (net.Conn, error) {
+		return tls.Dial(network, addr, config)
+	}
 )
 
 // serveCmd represents the serve command
@@ -86,25 +96,17 @@ func runProxy() {
 	httpOnly = viper.GetBool("http-only")
 	bindAddr = viper.GetString("bind")
 
-	// Initialize zap logger
 	var err error
-	if debug {
-		config := zap.NewDevelopmentConfig()
-		config.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
-		logger, err = config.Build()
-	} else {
-		config := zap.NewProductionConfig()
-		config.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
-		logger, err = config.Build()
-	}
+	logger, err = newRuntimeLogger(debug)
 	if err != nil {
-		panic(fmt.Sprintf("Failed to initialize logger: %v", err))
+		fmt.Fprintf(os.Stderr, "failed to initialize logger: %v\n", err)
+		os.Exit(1)
 	}
-	defer logger.Sync()
+	defer closeRuntimeLogger(logger)
 
 	logger.Info("Starting Tailscale proxy",
-		zap.String("domain", domain),
-		zap.Bool("http_only", httpOnly))
+		log.String("domain", domain),
+		log.Bool("http_only", httpOnly))
 
 	if debug {
 		logger.Info("Debug logging enabled")
@@ -139,161 +141,33 @@ func runProxy() {
 			GetCertificate: certManager.GetCertificate,
 		}
 
-		logger.Info("Automatic certificate issuance enabled", zap.String("domain", domain))
+		logger.Info("Automatic certificate issuance enabled", log.String("domain", domain))
 	} else if !httpOnly {
 		// Check if certificates exist in cert-dir
 		certFile := filepath.Join(certDir, domain+".crt")
 		keyFile := filepath.Join(certDir, domain+".key")
 
 		if _, err := os.Stat(certFile); os.IsNotExist(err) {
-			logger.Fatal("Certificate file not found (required when --issue=false)", zap.String("file", certFile))
+			logger.Fatal("Certificate file not found (required when --issue=false)", log.String("file", certFile))
 		}
 		if _, err := os.Stat(keyFile); os.IsNotExist(err) {
-			logger.Fatal("Key file not found (required when --issue=false)", zap.String("file", keyFile))
+			logger.Fatal("Key file not found (required when --issue=false)", log.String("file", keyFile))
 		}
 
 		// Load existing certificates
 		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 		if err != nil {
-			logger.Fatal("Failed to load certificates", zap.Error(err))
+			logger.Fatal("Failed to load certificates", log.Error(err))
 		}
 
 		tlsConfig = &tls.Config{
 			Certificates: []tls.Certificate{cert},
 		}
 
-		logger.Info("Using existing certificates", zap.String("cert_dir", certDir))
+		logger.Info("Using existing certificates", log.String("cert_dir", certDir))
 	}
 
-	// Create a reverse proxy handler
-	reverseProxy := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			// Setup X-Forwarded headers when running behind a proxy
-			setupXForwardedHeaders(req)
-
-			// Determine the appropriate Tailscale target
-			target := getTailscaleTarget(req)
-
-			if debug {
-				logDebugRequest("DIRECTOR", req)
-			}
-
-			logger.Info("Reverse proxying request",
-				zap.String("host", req.Host),
-				zap.String("path", req.URL.Path),
-				zap.String("target", target))
-
-			// Set the target
-			req.URL.Scheme = "https"
-			req.URL.Host = target
-			req.Host = target
-
-			// Preserve upgrade headers for Tailscale control protocol
-			if upgrade := req.Header.Get("Upgrade"); upgrade != "" {
-				if debug {
-					logger.Debug("Preserving Upgrade header", zap.String("upgrade", upgrade))
-				}
-			}
-		},
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			logger.Error("Reverse proxy error", zap.String("url", r.URL.String()), zap.Error(err))
-			if debug {
-				logDebugRequest("ERROR", r)
-			}
-			http.Error(w, "Service temporarily unavailable", http.StatusServiceUnavailable)
-		},
-		ModifyResponse: func(resp *http.Response) error {
-			if debug {
-				logger.Debug("Response received",
-					zap.String("method", resp.Request.Method),
-					zap.String("path", resp.Request.URL.Path),
-					zap.String("host", resp.Request.URL.Host),
-					zap.String("status", resp.Status))
-
-				for name, values := range resp.Header {
-					for _, value := range values {
-						logger.Debug("Response header", zap.String("name", name), zap.String("value", value))
-					}
-				}
-			}
-
-			// Rewrite URLs in response headers
-			if location := resp.Header.Get("Location"); location != "" {
-				if newLocation := rewriteTailscaleURL(location); newLocation != location {
-					logger.Info("Rewriting Location header",
-						zap.String("from", location),
-						zap.String("to", newLocation))
-					resp.Header.Set("Location", newLocation)
-				}
-			}
-
-			// Rewrite URLs in response body for JSON and HTML content
-			contentType := resp.Header.Get("Content-Type")
-			if strings.Contains(contentType, "application/json") ||
-				strings.Contains(contentType, "text/html") ||
-				strings.Contains(contentType, "text/plain") {
-
-				body, err := io.ReadAll(resp.Body)
-				if err != nil {
-					return err
-				}
-				resp.Body.Close()
-
-				// Rewrite URLs in the response body
-				rewrittenBody := rewriteTailscaleURLsInBody(string(body))
-
-				if rewrittenBody != string(body) {
-					logger.Info("Rewrote URLs in response body", zap.Int("bytes", len(rewrittenBody)))
-				}
-
-				// Create new response body
-				resp.Body = io.NopCloser(strings.NewReader(rewrittenBody))
-				resp.ContentLength = int64(len(rewrittenBody))
-				resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(rewrittenBody)))
-			}
-
-			return nil
-		},
-	}
-
-	// Create the main HTTP handler that will be used in all modes
-	mainHandler := http.NewServeMux()
-
-	// Add a health check endpoint
-	mainHandler.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		logger.Info("Health check request", zap.String("remote_addr", r.RemoteAddr))
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK - Tailscale Proxy is running"))
-	})
-
-	// Handle Tailscale control protocol upgrade specially
-	mainHandler.HandleFunc("/ts2021", handleTailscaleControlProtocol)
-
-	// Handle all other requests by proxying them
-	mainHandler.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Don't proxy health checks
-		if r.URL.Path == "/health" {
-			logger.Info("Health check request", zap.String("remote_addr", r.RemoteAddr))
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK - Tailscale Proxy is running"))
-			return
-		}
-
-		// Handle Tailscale control protocol upgrade specially
-		if strings.HasPrefix(r.URL.Path, "/ts2021") {
-			handleTailscaleControlProtocol(w, r)
-			return
-		}
-
-		if debug {
-			logDebugRequest("MAIN_HANDLER", r)
-		}
-		logger.Info("Request - proxying",
-			zap.String("remote_addr", r.RemoteAddr),
-			zap.String("host", r.Host),
-			zap.String("path", r.URL.Path))
-		reverseProxy.ServeHTTP(w, r)
-	})
+	mainHandler := buildMainHandler(nil)
 
 	var servers []*http.Server
 
@@ -306,8 +180,8 @@ func runProxy() {
 		servers = append(servers, httpServer)
 
 		logger.Info("HTTP-only mode enabled - running behind HTTPS proxy",
-			zap.String("bind_addr", bindAddr),
-			zap.String("port", port))
+			log.String("bind_addr", bindAddr),
+			log.String("port", port))
 	} else {
 		// Full HTTPS mode with optional HTTP for Let's Encrypt
 
@@ -380,25 +254,25 @@ func runProxy() {
 			if srv.TLSConfig != nil {
 				// HTTPS server
 				logger.Info("Starting HTTPS proxy server",
-					zap.String("addr", srv.Addr),
-					zap.String("domain", domain))
+					log.String("addr", srv.Addr),
+					log.String("domain", domain))
 				if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-					logger.Fatal("HTTPS server failed", zap.Error(err))
+					logger.Fatal("HTTPS server failed", log.Error(err))
 				}
 			} else {
 				// HTTP server
 				if httpOnly {
 					logger.Info("Starting HTTP proxy server (behind HTTPS proxy)",
-						zap.String("addr", srv.Addr))
+						log.String("addr", srv.Addr))
 				} else if issueCerts {
 					logger.Info("Starting HTTP server for Let's Encrypt challenges and redirects",
-						zap.String("addr", srv.Addr))
+						log.String("addr", srv.Addr))
 				} else {
 					logger.Info("Starting HTTP server for HTTPS redirects",
-						zap.String("addr", srv.Addr))
+						log.String("addr", srv.Addr))
 				}
 				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-					logger.Fatal("HTTP server failed", zap.Error(err))
+					logger.Fatal("HTTP server failed", log.Error(err))
 				}
 			}
 		}(server)
@@ -415,38 +289,170 @@ func runProxy() {
 	// Shutdown all servers
 	for _, server := range servers {
 		if err := server.Shutdown(ctx); err != nil {
-			logger.Error("Server shutdown error", zap.String("addr", server.Addr), zap.Error(err))
+			logger.Error("Server shutdown error", log.String("addr", server.Addr), log.Error(err))
 		}
 	}
 
 	logger.Info("Servers stopped")
 }
 
+func buildMainHandler(transport http.RoundTripper) http.Handler {
+	reverseProxy := buildReverseProxy(transport)
+	mainHandler := http.NewServeMux()
+
+	mainHandler.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		logger.Info("Health check request", log.String("remote_addr", r.RemoteAddr))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK - Tailscale Proxy is running"))
+	})
+
+	mainHandler.HandleFunc("/ts2021", handleTailscaleControlProtocol)
+
+	mainHandler.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			logger.Info("Health check request", log.String("remote_addr", r.RemoteAddr))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("OK - Tailscale Proxy is running"))
+			return
+		}
+
+		if strings.HasPrefix(r.URL.Path, "/ts2021") {
+			handleTailscaleControlProtocol(w, r)
+			return
+		}
+
+		if debug {
+			logDebugRequest("MAIN_HANDLER", r)
+		}
+
+		logger.Info("Request - proxying",
+			log.String("remote_addr", r.RemoteAddr),
+			log.String("host", r.Host),
+			log.String("path", r.URL.Path))
+		reverseProxy.ServeHTTP(w, r)
+	})
+
+	return mainHandler
+}
+
+func buildReverseProxy(transport http.RoundTripper) *httputil.ReverseProxy {
+	reverseProxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			setupXForwardedHeaders(req)
+
+			target := getTailscaleTarget(req)
+			upstream := resolveProxyTarget(target)
+			if upstream == nil {
+				upstream = &url.URL{
+					Scheme: "https",
+					Host:   target,
+				}
+			}
+
+			if debug {
+				logDebugRequest("DIRECTOR", req)
+			}
+
+			logger.Info("Reverse proxying request",
+				log.String("host", req.Host),
+				log.String("path", req.URL.Path),
+				log.String("target", target))
+
+			req.URL.Scheme = upstream.Scheme
+			req.URL.Host = upstream.Host
+			req.Host = upstream.Host
+
+			if upgrade := req.Header.Get("Upgrade"); upgrade != "" && debug {
+				logger.Debug("Preserving Upgrade header", log.String("upgrade", upgrade))
+			}
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			logger.Error("Reverse proxy error", log.String("url", r.URL.String()), log.Error(err))
+			if debug {
+				logDebugRequest("ERROR", r)
+			}
+			http.Error(w, "Service temporarily unavailable", http.StatusServiceUnavailable)
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			if debug {
+				logger.Debug("Response received",
+					log.String("method", resp.Request.Method),
+					log.String("path", resp.Request.URL.Path),
+					log.String("host", resp.Request.URL.Host),
+					log.String("status", resp.Status))
+
+				for name, values := range resp.Header {
+					for _, value := range values {
+						logger.Debug("Response header", log.String("name", name), log.String("value", value))
+					}
+				}
+			}
+
+			if location := resp.Header.Get("Location"); location != "" {
+				if newLocation := rewriteTailscaleURL(location); newLocation != location {
+					logger.Info("Rewriting Location header",
+						log.String("from", location),
+						log.String("to", newLocation))
+					resp.Header.Set("Location", newLocation)
+				}
+			}
+
+			contentType := resp.Header.Get("Content-Type")
+			if strings.Contains(contentType, "application/json") ||
+				strings.Contains(contentType, "text/html") ||
+				strings.Contains(contentType, "text/plain") {
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					return err
+				}
+				_ = resp.Body.Close()
+
+				rewrittenBody := rewriteTailscaleURLsInBody(string(body))
+				if rewrittenBody != string(body) {
+					logger.Info("Rewrote URLs in response body", log.Int("bytes", len(rewrittenBody)))
+				}
+
+				resp.Body = io.NopCloser(strings.NewReader(rewrittenBody))
+				resp.ContentLength = int64(len(rewrittenBody))
+				resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(rewrittenBody)))
+			}
+
+			return nil
+		},
+	}
+
+	if transport != nil {
+		reverseProxy.Transport = transport
+	}
+
+	return reverseProxy
+}
+
 // logDebugRequest logs detailed information about a request when debug mode is enabled
 func logDebugRequest(phase string, r *http.Request) {
 	logger.Debug("Request details",
-		zap.String("phase", phase),
-		zap.String("method", r.Method),
-		zap.String("url", r.URL.String()),
-		zap.String("remote_addr", r.RemoteAddr),
-		zap.String("host", r.Host),
-		zap.String("proto", r.Proto))
+		log.String("phase", phase),
+		log.String("method", r.Method),
+		log.String("url", r.URL.String()),
+		log.String("remote_addr", r.RemoteAddr),
+		log.String("host", r.Host),
+		log.String("proto", r.Proto))
 
 	// Log all headers
 	for name, values := range r.Header {
 		for _, value := range values {
 			logger.Debug("Request header",
-				zap.String("phase", phase),
-				zap.String("name", name),
-				zap.String("value", value))
+				log.String("phase", phase),
+				log.String("name", name),
+				log.String("value", value))
 		}
 	}
 
 	// Log query parameters
 	if len(r.URL.RawQuery) > 0 {
 		logger.Debug("Request query",
-			zap.String("phase", phase),
-			zap.String("query", r.URL.RawQuery))
+			log.String("phase", phase),
+			log.String("query", r.URL.RawQuery))
 	}
 }
 
@@ -459,11 +465,11 @@ func getTailscaleTarget(r *http.Request) string {
 
 	if debug {
 		logger.Debug("Determining target",
-			zap.String("path", path),
-			zap.String("user_agent", userAgent))
+			log.String("path", path),
+			log.String("user_agent", userAgent))
 		if authHeader != "" {
 			logger.Debug("Authorization header present",
-				zap.String("auth_preview", authHeader[:min(len(authHeader), 20)]+"..."))
+				log.String("auth_preview", authHeader[:min(len(authHeader), 20)]+"..."))
 		}
 	}
 
@@ -533,7 +539,7 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
 		logDebugRequest("TS2021_HANDLER", r)
 	}
 
-	logger.Info("Handling Tailscale control protocol upgrade request", zap.String("remote_addr", r.RemoteAddr))
+	logger.Info("Handling Tailscale control protocol upgrade request", log.String("remote_addr", r.RemoteAddr))
 
 	// Check if we can hijack the connection immediately
 	hijacker, ok := w.(http.Hijacker)
@@ -544,11 +550,11 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Connect to the backend first
-	backendConn, err := tls.Dial("tcp", "controlplane.tailscale.com:443", &tls.Config{
+	backendConn, err := dialControlPlane("tcp", "controlplane.tailscale.com:443", &tls.Config{
 		ServerName: "controlplane.tailscale.com",
 	})
 	if err != nil {
-		logger.Error("Error connecting to backend", zap.Error(err))
+		logger.Error("Error connecting to backend", log.Error(err))
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
@@ -557,7 +563,7 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
 	// Write the original request to the backend
 	err = r.Write(backendConn)
 	if err != nil {
-		logger.Error("Error writing request to backend", zap.Error(err))
+		logger.Error("Error writing request to backend", log.Error(err))
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
@@ -566,7 +572,7 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
 	reader := bufio.NewReader(backendConn)
 	resp, err := http.ReadResponse(reader, r)
 	if err != nil {
-		logger.Error("Error reading response from backend", zap.Error(err))
+		logger.Error("Error reading response from backend", log.Error(err))
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
@@ -588,7 +594,7 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
 		// Hijack the client connection
 		clientConn, _, err := hijacker.Hijack()
 		if err != nil {
-			logger.Error("Error hijacking connection", zap.Error(err))
+			logger.Error("Error hijacking connection", log.Error(err))
 			return
 		}
 		defer clientConn.Close()

@@ -1,0 +1,4 @@
+- [x] Add a pull request GitHub Actions workflow under `.github/workflows/` that triggers on pull request events and uses the repository’s standard checkout and Go setup steps.
+- [x] Configure the workflow to run the repository’s automated unit and integration coverage using `go test ./...`, or an explicitly equivalent command sequence if implementation requires it.
+- [x] Verify the workflow file is consistent with the existing release workflow conventions and easy to diagnose from CI logs.
+- [x] Run `go test ./...` locally to confirm the command used by the workflow passes before closing the change.

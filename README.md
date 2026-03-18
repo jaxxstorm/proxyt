@@ -7,7 +7,7 @@ A lightweight, preconfigured proxy for the Tailscale control plane that enables 
 
 ## Overview
 
-Tailscale connections between peers are incredible resiliant. If you are authenticated to Tailscale, it will endeavour to use all mechanisms at its disposal to forge connections it needs between clients.
+Tailscale connections between peers are incredibly resiliant. If you are authenticated to Tailscale, it will endeavour to use all mechanisms at its disposal to forge connections it needs between clients.
 
 However, some networks block the Tailscale _control plane_ (ie, the tailscale.com domain) either via DNS blackholing or SNI interception.
 

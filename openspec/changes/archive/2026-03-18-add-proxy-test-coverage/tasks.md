@@ -1,0 +1,5 @@
+- [x] Add unit tests for `getTailscaleTarget`, `rewriteTailscaleURL`, `rewriteTailscaleURLsInBody`, and `setupXForwardedHeaders`, using table-driven cases that cover representative control-plane, login, DERP, and default-web requests.
+- [x] Extract the minimum handler-construction seam needed to exercise proxyt’s main HTTP behavior with `httptest` while preserving the current production behavior in `runProxy`.
+- [x] Add integration tests that verify `/health` stays local, representative proxied HTTP requests reach the expected fake upstream, and response header/body rewrites are visible to the client.
+- [x] Introduce a narrow seam for `/ts2021` backend dialing and add focused tests for the control-plane upgrade path using local fakes instead of live Tailscale endpoints.
+- [x] Run `go test ./...` and adjust any test helpers or documentation needed so the new unit and integration coverage is part of the normal contributor workflow.

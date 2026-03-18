@@ -1,0 +1,44 @@
+schema: spec-driven
+
+
+context: |
+  Proxyt is a proxy for the tailscale control plane
+  It allows you to access the tailscale control plane when the DNS address for tailscale.com is blocked via DNS or SNI interception.
+  It also allows you to have a custom login domain for tailscale under your own DNS.
+  - It is written in Go
+  - It should use cobra/viper for CLI and config management with github.com/charmbracelet/fang for pretty output
+  - It should use github.com/jaxxstorm/log for logging, which is an opinionated wrapper around zap
+  - It supports the tailscale protocol directly including the noise protocol
+  - It should not intercept any traffic, but simply forward it to the tailscale control plane
+  - It should support both TCP and UDP traffic
+  - It should support both IPv4 and IPv6
+  - It should be designed for high performance and low latency
+  - It should be designed for high availability and fault tolerance
+  - It should be designed for security and privacy, with a focus on protecting user data and preventing unauthorized access
+  - It should be designed for ease of use and configuration, with clear documentation
+  - It should be runnable as a local binary or a container, with support for railway, kubernetes and any other deployment platform
+  - It should adhere to 12 factor principals for application design and deployment
+  - The docker image should be as small as possible, ideally under 50MB, and should use a minimal base image like scratch or distroless
+  
+
+
+rules:
+  proposal:
+    - Each proposal must include a clear motivation or problem statement.
+    - Each proposal must define proposed behavior in normative terms.
+    - Each proposal must describe idempotency and retry semantics.
+    - Each proposal must describe failure modes and recovery or compensation expectations.
+    - Each proposal must include observability and audit requirements.
+    - Each proposal must include a test plan summary that prioritizes unit tests.
+
+  specs:
+    - Specs are the source of truth; code must follow specs.
+    - Use clear MUST/SHOULD/MAY language for requirements.
+    
+  design:
+    - Design docs should explain architecture choices and key tradeoffs.
+    - Design docs should identify affected components, dependencies, and migration concerns.
+
+  tasks:
+    - Tasks should be implementation-focused, testable, and ordered for execution.
+    - Tasks should include verification work covering unit and integration tests.

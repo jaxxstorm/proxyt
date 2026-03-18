@@ -1,0 +1,4 @@
+- [x] Add `github.com/jaxxstorm/log` to the module and introduce a proxyt logger factory that maps `--debug` to the shared logger configuration, with unit tests for level selection and initialization failure behavior.
+- [x] Refactor [`cmd/serve.go`](/home/lbriggs/src/github/jaxxstorm/proxyt/cmd/serve.go) to use `*log.Logger` plus wrapper field helpers for all runtime log entries, removing direct zap imports from application code.
+- [x] Migrate existing fatal call sites to the shared logger's `Fatal` support and add coverage for fatal-path behavior where practical.
+- [x] Verify the migration with `go test ./...` and update any affected docs or examples if the logging behavior or troubleshooting guidance changed.
