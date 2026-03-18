@@ -5,7 +5,7 @@ go 1.25.0
 toolchain go1.25.6
 
 require (
-	github.com/charmbracelet/fang v1.0.0
+	github.com/charmbracelet/fang/v2 v2.0.1
 	github.com/jaxxstorm/log v0.0.0-20260318153214-631c633e2071
 	github.com/jaxxstorm/vers v0.0.3
 	github.com/spf13/cobra v1.10.2
