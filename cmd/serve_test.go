@@ -268,13 +268,20 @@ func TestBuildMainHandlerRewritesResponses(t *testing.T) {
 	}
 }
 
-func TestTS2021HandlerUsesInjectedDialer(t *testing.T) {
+func TestTS2021HandlerPreservesMethodAndUpgradeHeaders(t *testing.T) {
 	withProxyTestGlobals(t)
+
+	var receivedMethod string
+	var receivedConnection string
+	var receivedUpgrade string
 
 	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/ts2021" {
 			t.Fatalf("backend path = %q, want /ts2021", r.URL.Path)
 		}
+		receivedMethod = r.Method
+		receivedConnection = r.Header.Get("Connection")
+		receivedUpgrade = r.Header.Get("Upgrade")
 		w.Header().Set("X-Upstream", "local-fake")
 		_, _ = w.Write([]byte("controlplane ok"))
 	}))
@@ -289,7 +296,14 @@ func TestTS2021HandlerUsesInjectedDialer(t *testing.T) {
 	proxy := httptest.NewServer(buildMainHandler(nil))
 	t.Cleanup(proxy.Close)
 
-	resp, err := proxy.Client().Get(proxy.URL + "/ts2021")
+	req, err := http.NewRequest(http.MethodPost, proxy.URL+"/ts2021", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Connection", "upgrade")
+	req.Header.Set("Upgrade", "tailscale-control-protocol")
+
+	resp, err := proxy.Client().Do(req)
 	if err != nil {
 		t.Fatalf("ts2021 request: %v", err)
 	}
@@ -303,6 +317,15 @@ func TestTS2021HandlerUsesInjectedDialer(t *testing.T) {
 	}
 	if body := readBody(t, resp.Body); body != "controlplane ok" {
 		t.Fatalf("body = %q, want controlplane ok", body)
+	}
+	if receivedMethod != http.MethodPost {
+		t.Fatalf("backend method = %q, want POST", receivedMethod)
+	}
+	if receivedConnection != "upgrade" {
+		t.Fatalf("backend Connection = %q, want upgrade", receivedConnection)
+	}
+	if receivedUpgrade != "tailscale-control-protocol" {
+		t.Fatalf("backend Upgrade = %q, want tailscale-control-protocol", receivedUpgrade)
 	}
 }
 

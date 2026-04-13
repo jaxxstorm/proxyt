@@ -1,8 +1,20 @@
 # Hosting
 
-Railway is by far the easiest way to deploy Proxyt. It's preconfigured, and provides a valid domain and certificate for you.
+ProxyT works best when the frontend either terminates TLS directly on ProxyT or preserves arbitrary HTTP/1.1 upgrade requests all the way through to `/ts2021`.
+## Compatibility Matrix
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.app/template/proxyt?referralCode=ftkvtR)
+The Tailscale control protocol uses a non-standard upgrade flow on `/ts2021`. Some CDNs and managed reverse proxies only support standard WebSocket `GET` handshakes or specific upgrade tokens, which breaks login flows before the request reaches ProxyT.
+
+| Frontend | Status | Notes |
+| --- | --- | --- |
+| Direct public host | Supported | Best option if you control ports 80/443 |
+| Nginx / Apache / Caddy | Supported | Must preserve HTTP/1.1 upgrade semantics |
+| Tailscale Funnel | Supported | Known-good path for exposing ProxyT |
+| L4 TCP/TLS passthrough load balancer | Supported | Avoids HTTP upgrade rewriting at the edge |
+| Railway / other managed HTTP edge proxies | Fragile / provider-dependent | Works only if the platform forwards `POST` upgrade requests unchanged |
+| Cloudflare proxy / tunnel / workers | Not supported | Cloudflare does not support the Tailscale control protocol upgrade flow |
+| AWS CloudFront | Not supported | CloudFront commonly drops or normalizes the `/ts2021` upgrade request |
+| Fastly free tier | Not supported | Free-tier feature limits commonly block the required upgrade flow |
 
 # Deployment Scenarios
 
@@ -48,6 +60,8 @@ proxyt serve --domain proxy.example.com --http-only --port 3000
 
 Then configure your proxy to forward `https://proxy.example.com` to `http://localhost:3000`.
 
+This only works when the proxy preserves `/ts2021` as an HTTP/1.1 upgrade request. If the provider rewrites or rejects `POST` upgrades, mobile and browser login will fail.
+
 ## Behind Traditional Reverse Proxy (Nginx/Apache)
 
 ```bash
@@ -56,6 +70,11 @@ proxyt serve --domain proxy.example.com --http-only --port 8080 --bind 127.0.0.1
 
 **Nginx configuration example:**
 ```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 server {
     listen 443 ssl;
     server_name proxy.example.com;
@@ -73,10 +92,18 @@ server {
         # Important for Tailscale protocol upgrades
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
     }
 }
 ```
+
+Important requirements for any reverse proxy:
+
+- Preserve the original HTTP method for `/ts2021`
+- Forward `Connection` and `Upgrade` headers unchanged
+- Allow non-standard upgrade tokens used by the Tailscale client
+- Do not force HTTP/2 or transform the request before it reaches ProxyT
 
 ## Docker Deployment
 

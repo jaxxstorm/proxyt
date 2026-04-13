@@ -539,7 +539,12 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
 		logDebugRequest("TS2021_HANDLER", r)
 	}
 
-	logger.Info("Handling Tailscale control protocol upgrade request", log.String("remote_addr", r.RemoteAddr))
+	logger.Info("Handling Tailscale control protocol upgrade request",
+		log.String("remote_addr", r.RemoteAddr),
+		log.String("method", r.Method),
+		log.String("host", r.Host),
+		log.String("connection", r.Header.Get("Connection")),
+		log.String("upgrade", r.Header.Get("Upgrade")))
 
 	// Check if we can hijack the connection immediately
 	hijacker, ok := w.(http.Hijacker)
@@ -554,7 +559,12 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
 		ServerName: "controlplane.tailscale.com",
 	})
 	if err != nil {
-		logger.Error("Error connecting to backend", log.Error(err))
+		logger.Error("Error connecting to backend",
+			log.String("method", r.Method),
+			log.String("path", r.URL.Path),
+			log.String("connection", r.Header.Get("Connection")),
+			log.String("upgrade", r.Header.Get("Upgrade")),
+			log.Error(err))
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
@@ -563,7 +573,10 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
 	// Write the original request to the backend
 	err = r.Write(backendConn)
 	if err != nil {
-		logger.Error("Error writing request to backend", log.Error(err))
+		logger.Error("Error writing request to backend",
+			log.String("method", r.Method),
+			log.String("path", r.URL.Path),
+			log.Error(err))
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
@@ -572,10 +585,21 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
 	reader := bufio.NewReader(backendConn)
 	resp, err := http.ReadResponse(reader, r)
 	if err != nil {
-		logger.Error("Error reading response from backend", log.Error(err))
+		logger.Error("Error reading response from backend",
+			log.String("method", r.Method),
+			log.String("path", r.URL.Path),
+			log.Error(err))
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
+
+	logger.Info("Received control protocol response from upstream",
+		log.String("method", r.Method),
+		log.String("path", r.URL.Path),
+		log.Int("status_code", resp.StatusCode),
+		log.String("status", resp.Status),
+		log.String("connection", resp.Header.Get("Connection")),
+		log.String("upgrade", resp.Header.Get("Upgrade")))
 
 	// Copy response headers to client
 	for name, values := range resp.Header {
@@ -621,6 +645,14 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
 		logger.Debug("Tunneling finished")
 		return
 	}
+
+	logger.Error("Control protocol upgrade did not switch protocols",
+		log.String("method", r.Method),
+		log.String("path", r.URL.Path),
+		log.Int("status_code", resp.StatusCode),
+		log.String("status", resp.Status),
+		log.String("connection", resp.Header.Get("Connection")),
+		log.String("upgrade", resp.Header.Get("Upgrade")))
 
 	// For non-upgrade responses, copy the body normally
 	if resp.Body != nil {
