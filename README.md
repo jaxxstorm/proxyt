@@ -2,9 +2,6 @@
 
 A lightweight, preconfigured proxy for the Tailscale control plane that enables Tailscale access in the event the Tailscale control plane is being blocked.
 
-
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.app/template/proxyt?referralCode=ftkvtR)
-
 ## Overview
 
 Tailscale connections between peers are incredibly resiliant. If you are authenticated to Tailscale, it will endeavour to use all mechanisms at its disposal to forge connections it needs between clients.
@@ -12,6 +9,12 @@ Tailscale connections between peers are incredibly resiliant. If you are authent
 However, some networks block the Tailscale _control plane_ (ie, the tailscale.com domain) either via DNS blackholing or SNI interception.
 
 Proxyt allows you to host a proxy to the Tailscale control plane which can be used by clients. You can host Proxyt anywhere, register your own domain or even expose it via [Funnel](https://tailscale.com/kb/1223/funnel) giving you a reliable way of accessing the Tailscale control plane to authenticate clients.
+
+## Deployment Note
+
+ProxyT depends on the frontend preserving Tailscale's `/ts2021` control-protocol upgrade request intact. Direct deployments, Tailscale Funnel, and traditional reverse proxies such as Nginx, Apache, and Caddy are the most reliable options.
+
+Managed CDN and edge-proxy platforms that only support standard WebSocket `GET` handshakes, or that normalize non-standard upgrade traffic, are not compatible. In practice this means Cloudflare proxy/tunnel/workers are not supported, and platforms such as CloudFront, Fastly free tier, and Railway-style managed HTTP edges may fail depending on how their edge handles `POST` upgrades.
 
 ## 📖 Documentation
 
