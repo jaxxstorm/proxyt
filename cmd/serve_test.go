@@ -3,12 +3,14 @@ package cmd
 import (
 	"bufio"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -267,6 +269,187 @@ func TestBuildMainHandlerRewritesResponses(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("rewritten body missing %q: %s", want, body)
 		}
+	}
+}
+
+func TestRuntimeObservabilityEndpointsAndMetrics(t *testing.T) {
+	withProxyTestGlobals(t)
+
+	expiry := time.Date(2030, time.January, 1, 0, 0, 0, 0, time.UTC)
+	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodHead && request.URL.Host == "controlplane.tailscale.com" {
+			return &http.Response{
+				StatusCode: http.StatusNoContent,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Header:     make(http.Header),
+			}, nil
+		}
+		return nil, errors.New("upstream unavailable")
+	})
+	handler, _ := buildMainHandlerWithMetrics(transport, func() (*tls.Certificate, error) {
+		return &tls.Certificate{Leaf: &x509.Certificate{NotAfter: expiry}}, nil
+	})
+	proxy := httptest.NewServer(handler)
+	t.Cleanup(proxy.Close)
+
+	for _, endpoint := range []string{"/health", "/ready"} {
+		response, err := proxy.Client().Get(proxy.URL + endpoint)
+		if err != nil {
+			t.Fatalf("GET %s: %v", endpoint, err)
+		}
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200", endpoint, response.StatusCode)
+		}
+		_ = response.Body.Close()
+	}
+
+	response, err := proxy.Client().Get(proxy.URL + "/key")
+	if err != nil {
+		t.Fatalf("GET /key: %v", err)
+	}
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("/key status = %d, want 503", response.StatusCode)
+	}
+	_ = response.Body.Close()
+
+	response, err = proxy.Client().Get(proxy.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	metricsBody := readBody(t, response.Body)
+	for _, want := range []string{
+		`proxyt_http_requests_total{method="GET",route="health",status="200"} 1`,
+		`proxyt_http_requests_total{method="GET",route="ready",status="200"} 1`,
+		`proxyt_http_requests_total{method="GET",route="controlplane.tailscale.com",status="503"} 1`,
+		`proxyt_upstream_errors_total{target="controlplane.tailscale.com"} 1`,
+		"proxyt_http_request_duration_seconds",
+		"proxyt_certificate_expiry_timestamp_seconds " + strconv.FormatFloat(float64(expiry.Unix()), 'g', -1, 64),
+	} {
+		if !strings.Contains(metricsBody, want) {
+			t.Fatalf("metrics missing %q:\n%s", want, metricsBody)
+		}
+	}
+	failingHandler := buildMainHandlerWithObservability(roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("control plane unavailable")
+	}), nil)
+	failingProxy := httptest.NewServer(failingHandler)
+	t.Cleanup(failingProxy.Close)
+
+	response, err = failingProxy.Client().Get(failingProxy.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET failing /health: %v", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("failing /health status = %d, want 200", response.StatusCode)
+	}
+	_ = response.Body.Close()
+
+	response, err = failingProxy.Client().Get(failingProxy.URL + "/ready")
+	if err != nil {
+		t.Fatalf("GET failing /ready: %v", err)
+	}
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("failing /ready status = %d, want 503", response.StatusCode)
+	}
+	_ = response.Body.Close()
+}
+
+func TestTS2021HandlerTracksActiveTunnels(t *testing.T) {
+	withProxyTestGlobals(t)
+
+	backendReady := make(chan struct{})
+	releaseBackend := make(chan struct{})
+	backendResult := make(chan error, 1)
+	t.Cleanup(func() {
+		select {
+		case <-releaseBackend:
+		default:
+			close(releaseBackend)
+		}
+	})
+
+	backend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			backendResult <- errors.New("backend response writer does not support hijacking")
+			return
+		}
+		conn, readWriter, err := hijacker.Hijack()
+		if err != nil {
+			backendResult <- err
+			return
+		}
+		defer conn.Close()
+		if _, err := readWriter.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: upgrade\r\nUpgrade: tailscale-control-protocol\r\n\r\n"); err != nil {
+			backendResult <- err
+			return
+		}
+		if err := readWriter.Flush(); err != nil {
+			backendResult <- err
+			return
+		}
+		close(backendReady)
+		<-releaseBackend
+		backendResult <- nil
+	}))
+	backend.EnableHTTP2 = false
+	backend.StartTLS()
+	t.Cleanup(backend.Close)
+
+	dialControlPlane = func(network, addr string, config *tls.Config) (net.Conn, error) {
+		return tls.Dial(network, strings.TrimPrefix(backend.URL, "https://"), &tls.Config{InsecureSkipVerify: true})
+	}
+	handler, _ := buildMainHandlerWithMetrics(nil, nil)
+	proxy := httptest.NewServer(handler)
+	t.Cleanup(proxy.Close)
+
+	clientConn, err := net.Dial("tcp", strings.TrimPrefix(proxy.URL, "http://"))
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer clientConn.Close()
+	if err := clientConn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set client deadline: %v", err)
+	}
+	request := "POST /ts2021 HTTP/1.1\r\nHost: proxy.example.com\r\nConnection: upgrade\r\nUpgrade: tailscale-control-protocol\r\nContent-Length: 0\r\n\r\n"
+	if _, err := clientConn.Write([]byte(request)); err != nil {
+		t.Fatalf("write upgrade request: %v", err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(clientConn), &http.Request{Method: http.MethodPost})
+	if err != nil {
+		t.Fatalf("read switching response: %v", err)
+	}
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", response.StatusCode)
+	}
+	select {
+	case <-backendReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("backend did not establish tunnel")
+	}
+	metricsResponse, err := proxy.Client().Get(proxy.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET active tunnel metrics: %v", err)
+	}
+	metricsBody := readBody(t, metricsResponse.Body)
+	if !strings.Contains(metricsBody, "proxyt_ts2021_active_tunnels 1") {
+		t.Fatalf("active tunnel metric missing from:\n%s", metricsBody)
+	}
+
+	close(releaseBackend)
+	if err := clientConn.Close(); err != nil {
+		t.Fatalf("close client connection: %v", err)
+	}
+	if err := <-backendResult; err != nil {
+		t.Fatalf("backend tunnel: %v", err)
+	}
+	metricsResponse, err = proxy.Client().Get(proxy.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET closed tunnel metrics: %v", err)
+	}
+	metricsBody = readBody(t, metricsResponse.Body)
+	if !strings.Contains(metricsBody, "proxyt_ts2021_active_tunnels 0") {
+		t.Fatalf("closed tunnel metric missing from:\n%s", metricsBody)
 	}
 }
 
@@ -555,6 +738,12 @@ type upstreamRequest struct {
 	ForwardedFor   string
 	ForwardedHost  string
 	ForwardedProto string
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
 }
 
 func newRecordedUpstream(t *testing.T, _ string, responder func(http.ResponseWriter, *http.Request)) *recordedUpstream {

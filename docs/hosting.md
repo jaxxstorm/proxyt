@@ -169,9 +169,26 @@ When `--issue=false`, provide your own certificates:
 
 ### Health Checks
 
-ProxyT provides health check endpoints:
+ProxyT provides liveness and readiness endpoints:
 
 - HTTP: `http://proxy.example.com/health`
 - HTTPS: `https://proxy.example.com/health`
 
-Both return `200 OK` with response body: `OK - Tailscale Proxy is running`
+`/health` is a liveness endpoint. It always returns `200 OK` while ProxyT's HTTP server is running and does not contact Tailscale. Use it for container liveness probes.
+
+- HTTP: `http://proxy.example.com/ready`
+- HTTPS: `https://proxy.example.com/ready`
+
+`/ready` is a readiness endpoint. It returns `200 OK` only after ProxyT can reach `controlplane.tailscale.com` and, when ProxyT terminates TLS, has a valid non-expired certificate. It returns `503 Service Unavailable` when either dependency is unavailable. In `--http-only` mode, certificate readiness is the responsibility of the TLS-terminating proxy.
+
+### Prometheus Metrics
+
+ProxyT exposes Prometheus metrics at `/metrics` on the same listener as the proxy. Restrict access at the network or fronting-proxy layer if metrics must not be publicly accessible.
+
+- `proxyt_http_requests_total`: requests by method, bounded route, and response status
+- `proxyt_http_request_duration_seconds`: request duration by method, bounded route, and response status
+- `proxyt_upstream_errors_total`: reverse-proxy and control-plane connection errors by upstream target
+- `proxyt_certificate_expiry_timestamp_seconds`: expiry of a valid certificate managed by ProxyT; absent in `--http-only` mode
+- `proxyt_ts2021_active_tunnels`: currently active `/ts2021` control-protocol tunnels
+
+The `route` label uses fixed local endpoint names or Tailscale upstream hosts rather than raw request paths to avoid unbounded metric cardinality.

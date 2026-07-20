@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +20,8 @@ import (
 	"time"
 
 	log "github.com/jaxxstorm/log"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"golang.org/x/crypto/acme/autocert"
@@ -167,7 +170,7 @@ func runProxy() {
 		logger.Info("Using existing certificates", log.String("cert_dir", certDir))
 	}
 
-	mainHandler := buildMainHandler(nil)
+	mainHandler := buildMainHandlerWithObservability(nil, certificateGetter(certManager, tlsConfig))
 
 	var servers []*http.Server
 
@@ -296,8 +299,144 @@ func runProxy() {
 	logger.Info("Servers stopped")
 }
 
+const readinessTimeout = 5 * time.Second
+
+type proxyMetrics struct {
+	registry          *prometheus.Registry
+	requests          *prometheus.CounterVec
+	requestDuration   *prometheus.HistogramVec
+	upstreamErrors    *prometheus.CounterVec
+	certificateExpiry *prometheus.GaugeVec
+	activeTunnels     prometheus.Gauge
+}
+
+func newProxyMetrics() *proxyMetrics {
+	metrics := &proxyMetrics{
+		registry: prometheus.NewRegistry(),
+		requests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "proxyt_http_requests_total",
+			Help: "Total HTTP requests handled by ProxyT.",
+		}, []string{"method", "route", "status"}),
+		requestDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "proxyt_http_request_duration_seconds",
+			Help: "Duration of HTTP requests handled by ProxyT.",
+		}, []string{"method", "route", "status"}),
+		upstreamErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "proxyt_upstream_errors_total",
+			Help: "Total upstream connection and proxy errors.",
+		}, []string{"target"}),
+		certificateExpiry: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "proxyt_certificate_expiry_timestamp_seconds",
+			Help: "Expiry time of the certificate managed by ProxyT as a Unix timestamp.",
+		}, nil),
+		activeTunnels: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "proxyt_ts2021_active_tunnels",
+			Help: "Current number of active ts2021 control-protocol tunnels.",
+		}),
+	}
+	metrics.registry.MustRegister(
+		metrics.requests,
+		metrics.requestDuration,
+		metrics.upstreamErrors,
+		metrics.certificateExpiry,
+		metrics.activeTunnels,
+	)
+	return metrics
+}
+
+type readinessChecker struct {
+	transport   http.RoundTripper
+	certificate func() (*tls.Certificate, error)
+}
+
+func certificateGetter(certManager *autocert.Manager, tlsConfig *tls.Config) func() (*tls.Certificate, error) {
+	if httpOnly {
+		return nil
+	}
+	if certManager != nil {
+		return func() (*tls.Certificate, error) {
+			return certManager.GetCertificate(&tls.ClientHelloInfo{ServerName: domain})
+		}
+	}
+	if tlsConfig != nil && len(tlsConfig.Certificates) > 0 {
+		certificate := tlsConfig.Certificates[0]
+		return func() (*tls.Certificate, error) {
+			return &certificate, nil
+		}
+	}
+	return nil
+}
+
+func certificateExpiry(certificate *tls.Certificate) (time.Time, error) {
+	if certificate == nil {
+		return time.Time{}, fmt.Errorf("certificate is unavailable")
+	}
+	if certificate.Leaf != nil {
+		return certificate.Leaf.NotAfter, nil
+	}
+	if len(certificate.Certificate) == 0 {
+		return time.Time{}, fmt.Errorf("certificate has no leaf")
+	}
+	leaf, err := x509.ParseCertificate(certificate.Certificate[0])
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse certificate: %w", err)
+	}
+	return leaf.NotAfter, nil
+}
+
+func (checker readinessChecker) managedCertificateExpiry() (time.Time, error) {
+	if checker.certificate == nil {
+		return time.Time{}, nil
+	}
+	certificate, err := checker.certificate()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("get certificate: %w", err)
+	}
+	expiry, err := certificateExpiry(certificate)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !expiry.After(time.Now()) {
+		return time.Time{}, fmt.Errorf("certificate expired at %s", expiry.UTC().Format(time.RFC3339))
+	}
+	return expiry, nil
+}
+
+func (checker readinessChecker) check(ctx context.Context) (time.Time, error) {
+	expiry, err := checker.managedCertificateExpiry()
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	transport := checker.transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://controlplane.tailscale.com/", nil)
+	if err != nil {
+		return time.Time{}, err
+	}
+	response, err := (&http.Client{Transport: transport}).Do(request)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("reach control plane: %w", err)
+	}
+	_ = response.Body.Close()
+	return expiry, nil
+}
+
 func buildMainHandler(transport http.RoundTripper) http.Handler {
-	reverseProxy := buildReverseProxy(transport)
+	return buildMainHandlerWithObservability(transport, nil)
+}
+
+func buildMainHandlerWithObservability(transport http.RoundTripper, certificate func() (*tls.Certificate, error)) http.Handler {
+	handler, _ := buildMainHandlerWithMetrics(transport, certificate)
+	return handler
+}
+
+func buildMainHandlerWithMetrics(transport http.RoundTripper, certificate func() (*tls.Certificate, error)) (http.Handler, *proxyMetrics) {
+	metrics := newProxyMetrics()
+	readiness := readinessChecker{transport: transport, certificate: certificate}
+	reverseProxy := buildReverseProxy(transport, metrics)
 	mainHandler := http.NewServeMux()
 
 	mainHandler.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -306,7 +445,33 @@ func buildMainHandler(transport http.RoundTripper) http.Handler {
 		_, _ = w.Write([]byte("OK - Tailscale Proxy is running"))
 	})
 
-	mainHandler.HandleFunc("/ts2021", handleTailscaleControlProtocol)
+	mainHandler.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), readinessTimeout)
+		defer cancel()
+
+		expiry, err := readiness.check(ctx)
+		if err != nil {
+			logger.Error("Readiness check failed", log.Error(err))
+			http.Error(w, "ProxyT is not ready", http.StatusServiceUnavailable)
+			return
+		}
+		if !expiry.IsZero() {
+			metrics.certificateExpiry.WithLabelValues().Set(float64(expiry.Unix()))
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK - Tailscale Proxy is ready"))
+	})
+
+	mainHandler.Handle("/metrics", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if expiry, err := readiness.managedCertificateExpiry(); err == nil && !expiry.IsZero() {
+			metrics.certificateExpiry.WithLabelValues().Set(float64(expiry.Unix()))
+		}
+		promhttp.HandlerFor(metrics.registry, promhttp.HandlerOpts{}).ServeHTTP(w, r)
+	}))
+
+	mainHandler.HandleFunc("/ts2021", func(w http.ResponseWriter, r *http.Request) {
+		handleTailscaleControlProtocol(w, r, metrics)
+	})
 
 	mainHandler.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health" {
@@ -317,7 +482,7 @@ func buildMainHandler(transport http.RoundTripper) http.Handler {
 		}
 
 		if strings.HasPrefix(r.URL.Path, "/ts2021") {
-			handleTailscaleControlProtocol(w, r)
+			handleTailscaleControlProtocol(w, r, metrics)
 			return
 		}
 
@@ -332,10 +497,83 @@ func buildMainHandler(transport http.RoundTripper) http.Handler {
 		reverseProxy.ServeHTTP(w, r)
 	})
 
-	return mainHandler
+	return instrumentHandler(mainHandler, metrics), metrics
 }
 
-func buildReverseProxy(transport http.RoundTripper) *httputil.ReverseProxy {
+type metricsResponseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (writer *metricsResponseWriter) WriteHeader(status int) {
+	if writer.status == 0 {
+		writer.status = status
+	}
+	writer.ResponseWriter.WriteHeader(status)
+}
+
+func (writer *metricsResponseWriter) Write(body []byte) (int, error) {
+	if writer.status == 0 {
+		writer.status = http.StatusOK
+	}
+	return writer.ResponseWriter.Write(body)
+}
+
+func (writer *metricsResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := writer.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response writer does not support hijacking")
+	}
+	return hijacker.Hijack()
+}
+
+func (writer *metricsResponseWriter) Flush() {
+	if flusher, ok := writer.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (writer *metricsResponseWriter) Unwrap() http.ResponseWriter {
+	return writer.ResponseWriter
+}
+
+func instrumentHandler(next http.Handler, metrics *proxyMetrics) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		writer := &metricsResponseWriter{ResponseWriter: w}
+		next.ServeHTTP(writer, r)
+
+		status := writer.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		route := metricRoute(r)
+		labels := prometheus.Labels{
+			"method": r.Method,
+			"route":  route,
+			"status": fmt.Sprintf("%d", status),
+		}
+		metrics.requests.With(labels).Inc()
+		metrics.requestDuration.With(labels).Observe(time.Since(start).Seconds())
+	})
+}
+
+func metricRoute(r *http.Request) string {
+	switch {
+	case r.URL.Path == "/health":
+		return "health"
+	case r.URL.Path == "/ready":
+		return "ready"
+	case r.URL.Path == "/metrics":
+		return "metrics"
+	case strings.HasPrefix(r.URL.Path, "/ts2021"):
+		return "ts2021"
+	default:
+		return getTailscaleTarget(r)
+	}
+}
+
+func buildReverseProxy(transport http.RoundTripper, metrics *proxyMetrics) *httputil.ReverseProxy {
 	reverseProxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			setupXForwardedHeaders(req)
@@ -367,6 +605,7 @@ func buildReverseProxy(transport http.RoundTripper) *httputil.ReverseProxy {
 			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			metrics.upstreamErrors.WithLabelValues(getTailscaleTarget(r)).Inc()
 			logger.Error("Reverse proxy error", log.String("url", r.URL.String()), log.Error(err))
 			if debug {
 				logDebugRequest("ERROR", r)
@@ -534,7 +773,7 @@ func getTailscaleTarget(r *http.Request) string {
 }
 
 // handleTailscaleControlProtocol handles the /ts2021 endpoint with custom protocol upgrade
-func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
+func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request, metrics *proxyMetrics) {
 	if debug {
 		logDebugRequest("TS2021_HANDLER", r)
 	}
@@ -559,6 +798,7 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
 		ServerName: "controlplane.tailscale.com",
 	})
 	if err != nil {
+		metrics.upstreamErrors.WithLabelValues("controlplane.tailscale.com").Inc()
 		logger.Error("Error connecting to backend",
 			log.String("method", r.Method),
 			log.String("path", r.URL.Path),
@@ -573,6 +813,7 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
 	// Write the original request to the backend
 	err = r.Write(backendConn)
 	if err != nil {
+		metrics.upstreamErrors.WithLabelValues("controlplane.tailscale.com").Inc()
 		logger.Error("Error writing request to backend",
 			log.String("method", r.Method),
 			log.String("path", r.URL.Path),
@@ -585,6 +826,7 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
 	reader := bufio.NewReader(backendConn)
 	resp, err := http.ReadResponse(reader, r)
 	if err != nil {
+		metrics.upstreamErrors.WithLabelValues("controlplane.tailscale.com").Inc()
 		logger.Error("Error reading response from backend",
 			log.String("method", r.Method),
 			log.String("path", r.URL.Path),
@@ -626,6 +868,8 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
 			logger.Error("Error flushing protocol switch response", log.Error(err))
 			return
 		}
+		metrics.activeTunnels.Inc()
+		defer metrics.activeTunnels.Dec()
 
 		// Start bidirectional copying
 		done := make(chan bool, 2)
