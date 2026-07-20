@@ -339,6 +339,11 @@ func withProxyTestGlobals(t *testing.T) {
 	oldDebug := debug
 	oldHTTPOnly := httpOnly
 	oldBindAddr := bindAddr
+	oldHAEnabled := haEnabled
+	oldHASecret := haSecret
+	oldHACookieName := haCookieName
+	oldHACookieTTL := haCookieTTL
+	oldHASessions := haSessions
 	oldLogger := logger
 	oldResolveProxyTarget := resolveProxyTarget
 	oldDialControlPlane := dialControlPlane
@@ -352,6 +357,11 @@ func withProxyTestGlobals(t *testing.T) {
 	debug = false
 	httpOnly = false
 	bindAddr = "127.0.0.1"
+	haEnabled = false
+	haSecret = ""
+	haCookieName = defaultHACookieName
+	haCookieTTL = defaultHACookieTTL
+	haSessions = nil
 	logger = nil
 	resolveProxyTarget = oldResolveProxyTarget
 	dialControlPlane = oldDialControlPlane
@@ -366,6 +376,11 @@ func withProxyTestGlobals(t *testing.T) {
 		debug = oldDebug
 		httpOnly = oldHTTPOnly
 		bindAddr = oldBindAddr
+		haEnabled = oldHAEnabled
+		haSecret = oldHASecret
+		haCookieName = oldHACookieName
+		haCookieTTL = oldHACookieTTL
+		haSessions = oldHASessions
 		logger = oldLogger
 		resolveProxyTarget = oldResolveProxyTarget
 		dialControlPlane = oldDialControlPlane
@@ -422,6 +437,7 @@ type recordedUpstream struct {
 type upstreamRequest struct {
 	Path           string
 	Host           string
+	Cookie         string
 	ForwardedFor   string
 	ForwardedHost  string
 	ForwardedProto string
@@ -437,6 +453,7 @@ func newRecordedUpstream(t *testing.T, _ string, responder func(http.ResponseWri
 		upstream.records = append(upstream.records, upstreamRequest{
 			Path:           r.URL.Path,
 			Host:           r.Host,
+			Cookie:         r.Header.Get("Cookie"),
 			ForwardedFor:   r.Header.Get("X-Forwarded-For"),
 			ForwardedHost:  r.Header.Get("X-Forwarded-Host"),
 			ForwardedProto: r.Header.Get("X-Forwarded-Proto"),

@@ -111,6 +111,70 @@ docker run -d \
   serve --domain proxy.example.com --http-only --port 8080 --bind 0.0.0.0
 ```
 
+## High Availability
+
+Proxyt can run in a simple HA shape without Redis or another external coordination service. In HA mode, proxyt issues its own signed session cookie and any replica with the same public domain and shared secret can validate it.
+
+The recommended deployment model is:
+
+- run proxyt with `--http-only`
+- terminate TLS at your load balancer, ingress controller, or reverse proxy
+- route one public DNS name to multiple proxyt instances
+- configure the same `--ha-secret` on every replica
+
+### Kubernetes
+
+Typical Kubernetes deployment shape:
+
+- an `Ingress` or `LoadBalancer` terminates TLS for `proxy.example.com`
+- a `Deployment` runs multiple proxyt pods
+- every pod receives the same `PROXYT_HA=true` and `PROXYT_HA_SECRET=...`
+- traffic is forwarded to proxyt with `X-Forwarded-Proto: https`
+
+Example container args:
+
+```bash
+proxyt serve \
+  --domain proxy.example.com \
+  --http-only \
+  --port 8080 \
+  --ha \
+  --ha-secret "${PROXYT_HA_SECRET}"
+```
+
+### Docker or Compose
+
+Run multiple containers behind a reverse proxy such as Caddy, Traefik, or Nginx and provide the same HA secret to each container:
+
+```yaml
+version: '3.8'
+services:
+  proxyt-a:
+    image: ghcr.io/jaxxstorm/proxyt:latest
+    command: serve --domain proxy.example.com --http-only --port 8080 --ha --ha-secret ${PROXYT_HA_SECRET}
+  proxyt-b:
+    image: ghcr.io/jaxxstorm/proxyt:latest
+    command: serve --domain proxy.example.com --http-only --port 8080 --ha --ha-secret ${PROXYT_HA_SECRET}
+```
+
+### Other environments
+
+The same pattern applies elsewhere:
+
+- one shared public DNS name
+- one shared HA secret
+- external TLS termination preferred
+- multiple proxyt instances behind the same frontend
+
+### HA limitations
+
+The stateless HA model is portable, but it has explicit limits:
+
+- active `/ts2021` upgraded connections are not handed off between replicas mid-stream
+- rotating the shared secret invalidates active proxyt HA continuity cookies
+- proxyt does not provide strong server-side session revocation in this mode
+- built-in Let's Encrypt issuance is not the recommended multi-replica path; external TLS termination is simpler and more predictable
+
 ## DNS Configuration
 
 Point your custom domain to the server running ProxyT:

@@ -19,6 +19,46 @@ All flags can be set via environment variables with the `PROXYT_` prefix (e.g., 
 | `--debug` | `PROXYT_DEBUG` | Enable debug logging | `false` | No |
 | `--http-only` | `PROXYT_HTTP_ONLY` | Run behind HTTPS proxy (no TLS termination) | `false` | No |
 | `--bind` | `PROXYT_BIND` | Address to bind the server to | `0.0.0.0` | No |
+| `--ha` | `PROXYT_HA` | Enable stateless HA session continuity across replicas | `false` | No |
+| `--ha-secret` | `PROXYT_HA_SECRET` | Shared secret used to sign proxyt HA session cookies | - | Yes (when `--ha=true`) |
+| `--ha-cookie-name` | `PROXYT_HA_COOKIE_NAME` | Cookie name used for proxyt HA session continuity | `__Host-proxyt-ha` | No |
+| `--ha-cookie-ttl` | `PROXYT_HA_COOKIE_TTL` | Lifetime for proxyt HA session continuity cookies | `12h` | No |
+
+## High Availability Configuration
+
+Proxyt's HA mode is opt-in. When enabled, proxyt issues its own signed, stateless session cookie so multiple replicas behind the same public DNS name can validate and continue the same browser-facing flow without a shared database or cache.
+
+Minimum HA configuration:
+
+```bash
+proxyt serve \
+  --domain proxy.example.com \
+  --http-only \
+  --port 8080 \
+  --ha \
+  --ha-secret "replace-with-a-long-random-shared-secret"
+```
+
+All replicas in the same HA deployment must use:
+
+- the same `--domain`
+- the same `--ha-secret`
+- the same externally visible DNS name
+
+Recommended defaults:
+
+- Keep `--ha-cookie-name` at the default unless you have a strong reason to change it.
+- Use a long random `--ha-secret` with at least 32 characters.
+- Prefer `--http-only` behind a load balancer or reverse proxy that terminates TLS for the shared public domain.
+
+### HA limitations
+
+HA mode is intentionally stateless, which keeps deployment simple but comes with boundaries:
+
+- active `/ts2021` upgraded connections stay on the instance that accepted them
+- rotating `--ha-secret` invalidates existing proxyt HA continuity cookies
+- server-side revocation is limited because proxyt does not keep an external session store in this mode
+- continuity data must stay small enough to fit in proxyt's signed cookie
 
 ## Docker
 

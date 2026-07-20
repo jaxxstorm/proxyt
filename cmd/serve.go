@@ -34,6 +34,11 @@ var (
 	debug              bool
 	httpOnly           bool
 	bindAddr           string
+	haEnabled          bool
+	haSecret           string
+	haCookieName       string
+	haCookieTTL        time.Duration
+	haSessions         *haSessionManager
 	logger             *log.Logger
 	resolveProxyTarget = func(target string) *url.URL {
 		return &url.URL{
@@ -68,6 +73,10 @@ func init() {
 	serveCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug logging for all requests")
 	serveCmd.Flags().BoolVar(&httpOnly, "http-only", false, "Run in HTTP-only mode (for use behind HTTPS proxy/load balancer)")
 	serveCmd.Flags().StringVar(&bindAddr, "bind", "0.0.0.0", "Address to bind the server to")
+	serveCmd.Flags().BoolVar(&haEnabled, "ha", false, "Enable high-availability session continuity across replicas")
+	serveCmd.Flags().StringVar(&haSecret, "ha-secret", "", "Shared secret for stateless HA session cookies (required with --ha)")
+	serveCmd.Flags().StringVar(&haCookieName, "ha-cookie-name", defaultHACookieName, "Cookie name for proxyt HA session continuity")
+	serveCmd.Flags().DurationVar(&haCookieTTL, "ha-cookie-ttl", defaultHACookieTTL, "Lifetime for proxyt HA session continuity cookies")
 
 	// Bind environment variables
 	viper.SetEnvPrefix("PROXYT")
@@ -82,6 +91,10 @@ func init() {
 	viper.BindPFlag("debug", serveCmd.Flags().Lookup("debug"))
 	viper.BindPFlag("http-only", serveCmd.Flags().Lookup("http-only"))
 	viper.BindPFlag("bind", serveCmd.Flags().Lookup("bind"))
+	viper.BindPFlag("ha", serveCmd.Flags().Lookup("ha"))
+	viper.BindPFlag("ha-secret", serveCmd.Flags().Lookup("ha-secret"))
+	viper.BindPFlag("ha-cookie-name", serveCmd.Flags().Lookup("ha-cookie-name"))
+	viper.BindPFlag("ha-cookie-ttl", serveCmd.Flags().Lookup("ha-cookie-ttl"))
 }
 
 func runProxy() {
@@ -95,6 +108,10 @@ func runProxy() {
 	debug = viper.GetBool("debug")
 	httpOnly = viper.GetBool("http-only")
 	bindAddr = viper.GetString("bind")
+	haEnabled = viper.GetBool("ha")
+	haSecret = viper.GetString("ha-secret")
+	haCookieName = viper.GetString("ha-cookie-name")
+	haCookieTTL = viper.GetDuration("ha-cookie-ttl")
 
 	var err error
 	logger, err = newRuntimeLogger(debug)
@@ -118,6 +135,18 @@ func runProxy() {
 	}
 	if !httpOnly && certDir == "" {
 		logger.Fatal("cert-dir is required when not using --http-only mode")
+	}
+
+	haSessions = nil
+	if haEnabled {
+		haSessions, err = newHASessionManager(domain, haSecret, haCookieName, haCookieTTL)
+		if err != nil {
+			logger.Fatal("invalid HA configuration", log.Error(err))
+		}
+
+		logger.Info("High availability mode enabled",
+			log.String("ha_cookie_name", haSessions.cookieName),
+			log.String("ha_cookie_ttl", haSessions.ttl.String()))
 	}
 
 	var certManager *autocert.Manager
@@ -321,6 +350,14 @@ func buildMainHandler(transport http.RoundTripper) http.Handler {
 			return
 		}
 
+		if haSessions != nil {
+			if _, err := haSessions.ensureSession(w, r); err != nil {
+				logger.Error("Failed to establish HA session", log.Error(err))
+				http.Error(w, "Service temporarily unavailable", http.StatusServiceUnavailable)
+				return
+			}
+		}
+
 		if debug {
 			logDebugRequest("MAIN_HANDLER", r)
 		}
@@ -339,6 +376,9 @@ func buildReverseProxy(transport http.RoundTripper) *httputil.ReverseProxy {
 	reverseProxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			setupXForwardedHeaders(req)
+			if haSessions != nil {
+				stripNamedCookie(req, haSessions.cookieName)
+			}
 
 			target := getTailscaleTarget(req)
 			upstream := resolveProxyTarget(target)
@@ -394,6 +434,26 @@ func buildReverseProxy(transport http.RoundTripper) *httputil.ReverseProxy {
 						log.String("from", location),
 						log.String("to", newLocation))
 					resp.Header.Set("Location", newLocation)
+				}
+			}
+
+			if setCookies := resp.Header.Values("Set-Cookie"); len(setCookies) > 0 {
+				rewritten := make([]string, 0, len(setCookies))
+				changed := false
+				for _, value := range setCookies {
+					newValue := rewriteSetCookieHeader(value)
+					if newValue != value {
+						changed = true
+					}
+					rewritten = append(rewritten, newValue)
+				}
+
+				if changed {
+					logger.Info("Rewriting Set-Cookie domains to proxyt domain")
+					resp.Header.Del("Set-Cookie")
+					for _, value := range rewritten {
+						resp.Header.Add("Set-Cookie", value)
+					}
 				}
 			}
 
@@ -561,6 +621,10 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
 	defer backendConn.Close()
 
 	// Write the original request to the backend
+	if haSessions != nil {
+		stripNamedCookie(r, haSessions.cookieName)
+	}
+
 	err = r.Write(backendConn)
 	if err != nil {
 		logger.Error("Error writing request to backend", log.Error(err))

@@ -1,0 +1,5 @@
+- [x] Add an HA configuration surface for proxyt, including the shared secret material required for multiple replicas to participate in the same deployment without changing single-instance defaults.
+- [x] Implement stateless session continuity for proxied HTTP flows so a client can continue through a related request even when that request lands on a different proxyt instance behind the same `--domain`.
+- [x] Add unit and integration tests covering HA configuration validation, session cookie handling, protected session payload behavior, and continuity across at least two logical proxyt replicas sharing the same secret.
+- [x] Update the documentation to describe HA deployment patterns for Kubernetes, Docker, and generic reverse-proxy environments, including the recommended TLS termination model, the `/ts2021` connection-scope caveat, and the explicit limitations of the stateless design.
+- [x] Run `go test ./...` and adjust any supporting docs or configuration examples needed so the HA workflow is ready for implementation review.
