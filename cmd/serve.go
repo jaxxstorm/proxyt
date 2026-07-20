@@ -616,12 +616,16 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
 		logger.Info("Protocol switching response received, hijacking connection for tunneling")
 
 		// Hijack the client connection
-		clientConn, _, err := hijacker.Hijack()
+		clientConn, clientReadWriter, err := hijacker.Hijack()
 		if err != nil {
 			logger.Error("Error hijacking connection", log.Error(err))
 			return
 		}
 		defer clientConn.Close()
+		if err := clientReadWriter.Flush(); err != nil {
+			logger.Error("Error flushing protocol switch response", log.Error(err))
+			return
+		}
 
 		// Start bidirectional copying
 		done := make(chan bool, 2)
@@ -629,14 +633,14 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request) {
 		// Copy from client to backend
 		go func() {
 			defer func() { done <- true }()
-			io.Copy(backendConn, clientConn)
+			io.Copy(backendConn, clientReadWriter)
 			logger.Debug("Client to backend copy finished")
 		}()
 
 		// Copy from backend to client
 		go func() {
 			defer func() { done <- true }()
-			io.Copy(clientConn, backendConn)
+			io.Copy(clientConn, reader)
 			logger.Debug("Backend to client copy finished")
 		}()
 

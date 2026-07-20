@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestGetTailscaleTarget(t *testing.T) {
@@ -326,6 +328,111 @@ func TestTS2021HandlerPreservesMethodAndUpgradeHeaders(t *testing.T) {
 	}
 	if receivedUpgrade != "tailscale-control-protocol" {
 		t.Fatalf("backend Upgrade = %q, want tailscale-control-protocol", receivedUpgrade)
+	}
+}
+
+func TestTS2021HandlerTunnelsBufferedBytes(t *testing.T) {
+	withProxyTestGlobals(t)
+
+	clientPayload := []byte("client-buffered-payload")
+	upstreamPayload := []byte("upstream-buffered-payload")
+	upstreamReply := []byte("upstream-reply")
+	backendResult := make(chan error, 1)
+
+	backend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			backendResult <- errors.New("backend response writer does not support hijacking")
+			return
+		}
+
+		conn, readWriter, err := hijacker.Hijack()
+		if err != nil {
+			backendResult <- err
+			return
+		}
+		defer conn.Close()
+
+		if _, err := readWriter.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: upgrade\r\nUpgrade: tailscale-control-protocol\r\n\r\n"); err != nil {
+			backendResult <- err
+			return
+		}
+		if _, err := readWriter.Write(upstreamPayload); err != nil {
+			backendResult <- err
+			return
+		}
+		if err := readWriter.Flush(); err != nil {
+			backendResult <- err
+			return
+		}
+
+		receivedClientPayload := make([]byte, len(clientPayload))
+		if _, err := io.ReadFull(readWriter, receivedClientPayload); err != nil {
+			backendResult <- err
+			return
+		}
+		if string(receivedClientPayload) != string(clientPayload) {
+			backendResult <- errors.New("backend received unexpected client payload")
+			return
+		}
+
+		_, err = conn.Write(upstreamReply)
+		backendResult <- err
+	}))
+	backend.EnableHTTP2 = false
+	backend.StartTLS()
+	t.Cleanup(backend.Close)
+
+	dialControlPlane = func(network, addr string, config *tls.Config) (net.Conn, error) {
+		return tls.Dial(network, strings.TrimPrefix(backend.URL, "https://"), &tls.Config{
+			InsecureSkipVerify: true,
+		})
+	}
+
+	proxy := httptest.NewServer(buildMainHandler(nil))
+	t.Cleanup(proxy.Close)
+
+	clientConn, err := net.Dial("tcp", strings.TrimPrefix(proxy.URL, "http://"))
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer clientConn.Close()
+	if err := clientConn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set client deadline: %v", err)
+	}
+
+	request := "POST /ts2021 HTTP/1.1\r\nHost: proxy.example.com\r\nConnection: upgrade\r\nUpgrade: tailscale-control-protocol\r\nContent-Length: 0\r\n\r\n"
+	if _, err := clientConn.Write(append([]byte(request), clientPayload...)); err != nil {
+		t.Fatalf("write upgrade request and payload: %v", err)
+	}
+
+	clientReader := bufio.NewReader(clientConn)
+	response, err := http.ReadResponse(clientReader, &http.Request{Method: http.MethodPost})
+	if err != nil {
+		t.Fatalf("read switching response: %v", err)
+	}
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", response.StatusCode)
+	}
+
+	receivedUpstreamPayload := make([]byte, len(upstreamPayload))
+	if _, err := io.ReadFull(clientReader, receivedUpstreamPayload); err != nil {
+		t.Fatalf("read buffered upstream payload: %v", err)
+	}
+	if string(receivedUpstreamPayload) != string(upstreamPayload) {
+		t.Fatalf("upstream payload = %q, want %q", receivedUpstreamPayload, upstreamPayload)
+	}
+
+	receivedReply := make([]byte, len(upstreamReply))
+	if _, err := io.ReadFull(clientReader, receivedReply); err != nil {
+		t.Fatalf("read upstream reply: %v", err)
+	}
+	if string(receivedReply) != string(upstreamReply) {
+		t.Fatalf("upstream reply = %q, want %q", receivedReply, upstreamReply)
+	}
+
+	if err := <-backendResult; err != nil {
+		t.Fatalf("backend tunnel: %v", err)
 	}
 }
 
