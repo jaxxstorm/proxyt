@@ -1,14 +1,21 @@
 package cmd
 
 import (
+	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/charmbracelet/fang"
 	"github.com/jaxxstorm/vers"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
-var cfgFile string
+var (
+	cfgFile  string
+	settings = viper.New()
+)
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
@@ -32,6 +39,37 @@ func Execute() {
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.proxyt.yaml)")
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if err := loadConfiguration(settings, cfgFile, os.UserHomeDir); err != nil {
+			return err
+		}
+		if cmd.Name() == "serve" {
+			return validateServeConfiguration(settings)
+		}
+		return nil
+	}
+}
+
+func loadConfiguration(settings *viper.Viper, configFile string, homeDir func() (string, error)) error {
+	explicit := configFile != ""
+	if !explicit {
+		home, err := homeDir()
+		if err != nil {
+			return fmt.Errorf("determine home directory: %w", err)
+		}
+		configFile = filepath.Join(home, ".proxyt.yaml")
+	}
+
+	settings.SetConfigFile(configFile)
+	if err := settings.ReadInConfig(); err != nil {
+		var notFound viper.ConfigFileNotFoundError
+		if !explicit && (os.IsNotExist(err) || errors.As(err, &notFound)) {
+			return nil
+		}
+		return fmt.Errorf("read configuration %q: %w", configFile, err)
+	}
+
+	return nil
 }
 
 // Version is the version of this tool.

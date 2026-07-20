@@ -23,6 +23,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	"golang.org/x/crypto/acme/autocert"
 )
@@ -72,32 +73,42 @@ func init() {
 	serveCmd.Flags().BoolVar(&httpOnly, "http-only", false, "Run in HTTP-only mode (for use behind HTTPS proxy/load balancer)")
 	serveCmd.Flags().StringVar(&bindAddr, "bind", "0.0.0.0", "Address to bind the server to")
 
-	// Bind environment variables
-	viper.SetEnvPrefix("PROXYT")
-	viper.AutomaticEnv()
-	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-	viper.BindPFlag("domain", serveCmd.Flags().Lookup("domain"))
-	viper.BindPFlag("port", serveCmd.Flags().Lookup("port"))
-	viper.BindPFlag("https-port", serveCmd.Flags().Lookup("https-port"))
-	viper.BindPFlag("email", serveCmd.Flags().Lookup("email"))
-	viper.BindPFlag("cert-dir", serveCmd.Flags().Lookup("cert-dir"))
-	viper.BindPFlag("issue", serveCmd.Flags().Lookup("issue"))
-	viper.BindPFlag("debug", serveCmd.Flags().Lookup("debug"))
-	viper.BindPFlag("http-only", serveCmd.Flags().Lookup("http-only"))
-	viper.BindPFlag("bind", serveCmd.Flags().Lookup("bind"))
+	configureServeSettings(settings, serveCmd.Flags())
+}
+
+func configureServeSettings(settings *viper.Viper, flags *pflag.FlagSet) {
+	settings.SetEnvPrefix("PROXYT")
+	settings.AutomaticEnv()
+	settings.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+	for _, key := range []string{"domain", "port", "https-port", "email", "cert-dir", "issue", "debug", "http-only", "bind"} {
+		_ = settings.BindPFlag(key, flags.Lookup(key))
+	}
+}
+
+func validateServeConfiguration(settings *viper.Viper) error {
+	if settings.GetString("domain") == "" {
+		return fmt.Errorf("domain is required")
+	}
+	if !settings.GetBool("http-only") && settings.GetString("cert-dir") == "" {
+		return fmt.Errorf("cert-dir is required when not using --http-only mode")
+	}
+	if !settings.GetBool("http-only") && settings.GetBool("issue") && settings.GetString("email") == "" {
+		return fmt.Errorf("email is required when --issue is true for Let's Encrypt registration")
+	}
+	return nil
 }
 
 func runProxy() {
 	// Read values from viper (supports both flags and environment variables)
-	domain = viper.GetString("domain")
-	port = viper.GetString("port")
-	httpsPort = viper.GetString("https-port")
-	email = viper.GetString("email")
-	certDir = viper.GetString("cert-dir")
-	issueCerts = viper.GetBool("issue")
-	debug = viper.GetBool("debug")
-	httpOnly = viper.GetBool("http-only")
-	bindAddr = viper.GetString("bind")
+	domain = settings.GetString("domain")
+	port = settings.GetString("port")
+	httpsPort = settings.GetString("https-port")
+	email = settings.GetString("email")
+	certDir = settings.GetString("cert-dir")
+	issueCerts = settings.GetBool("issue")
+	debug = settings.GetBool("debug")
+	httpOnly = settings.GetBool("http-only")
+	bindAddr = settings.GetString("bind")
 
 	var err error
 	logger, err = newRuntimeLogger(debug)
@@ -115,23 +126,14 @@ func runProxy() {
 		logger.Info("Debug logging enabled")
 	}
 
-	// Validate required flags based on mode
-	if domain == "" {
-		logger.Fatal("domain is required")
-	}
-	if !httpOnly && certDir == "" {
-		logger.Fatal("cert-dir is required when not using --http-only mode")
+	if err := validateServeConfiguration(settings); err != nil {
+		logger.Fatal(err.Error())
 	}
 
 	var certManager *autocert.Manager
 	var tlsConfig *tls.Config
 
 	if !httpOnly && issueCerts {
-		// Validate email is required for Let's Encrypt
-		if email == "" {
-			logger.Fatal("Email is required when --issue is true for Let's Encrypt registration")
-		}
-
 		// Set up Let's Encrypt certificate manager
 		certManager = &autocert.Manager{
 			Prompt:     autocert.AcceptTOS,

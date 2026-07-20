@@ -8,6 +8,28 @@ Proxyt can handle issuing a valid certificate for you via Let's Encrypt - for th
 
 All flags can be set via environment variables with the `PROXYT_` prefix (e.g., `PROXYT_DOMAIN`, `PROXYT_HTTP_ONLY`).
 
+## YAML Configuration
+
+ProxyT loads YAML settings from `--config /path/to/proxyt.yaml`. If `--config` is omitted, it loads `$HOME/.proxyt.yaml` when that file exists; no file is required for flag-only or environment-only deployments.
+
+Configuration precedence is: changed command flags, `PROXYT_*` environment variables, YAML values, then built-in defaults. An explicitly supplied missing, unreadable, or malformed `--config` file stops startup with an error.
+
+YAML keys match the flag names without the leading `--`:
+
+```yaml
+domain: proxy.example.com
+email: admin@example.com
+cert-dir: /etc/proxyt/certs
+issue: true
+port: "80"
+https-port: "443"
+bind: 0.0.0.0
+debug: false
+http-only: false
+```
+
+ProxyT validates the final values after precedence is applied. `domain` is always required; `cert-dir` is required unless `http-only` is true; and `email` is required when certificate issuance is enabled.
+
 | Flag | Environment Variable | Description | Default | Required |
 |------|---------------------|-------------|---------|----------|
 | `--domain` | `PROXYT_DOMAIN` | Your custom domain name | - | Yes |
