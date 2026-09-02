@@ -29,5 +29,5 @@ ProxyT MUST fail before serving when an explicitly requested configuration file 
 - **THEN** ProxyT MUST return a startup error and MUST NOT start listeners
 
 #### Scenario: Resolved configuration is invalid
-- **WHEN** configuration sources resolve to a missing domain, a missing certificate directory outside HTTP-only mode, or a missing email with certificate issuance enabled
+- **WHEN** configuration sources resolve to a missing domain or email while automatic certificate issuance is enabled, or a missing certificate directory while serving HTTPS
 - **THEN** ProxyT MUST fail before serving traffic
