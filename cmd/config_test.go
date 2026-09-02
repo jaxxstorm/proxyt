@@ -92,7 +92,9 @@ func TestValidateServeConfiguration(t *testing.T) {
 		values  map[string]any
 		wantErr bool
 	}{
-		{name: "missing domain", values: map[string]any{"http-only": true}, wantErr: true},
+		{name: "missing domain", values: map[string]any{"http-only": false, "issue": true}, wantErr: true},
+		{name: "missing domain in http only mode", values: map[string]any{"http-only": true}, wantErr: false},
+		{name: "missing domain with manual certificate", values: map[string]any{"cert-dir": "/certs", "issue": false}, wantErr: false},
 		{name: "missing certificate directory", values: map[string]any{"domain": "proxy.example.com", "issue": false}, wantErr: true},
 		{name: "missing lets encrypt email", values: map[string]any{"domain": "proxy.example.com", "cert-dir": "/certs", "issue": true}, wantErr: true},
 		{name: "http only", values: map[string]any{"domain": "proxy.example.com", "http-only": true}, wantErr: false},

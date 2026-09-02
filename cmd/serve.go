@@ -86,8 +86,8 @@ func configureServeSettings(settings *viper.Viper, flags *pflag.FlagSet) {
 }
 
 func validateServeConfiguration(settings *viper.Viper) error {
-	if settings.GetString("domain") == "" {
-		return fmt.Errorf("domain is required")
+	if settings.GetString("domain") == "" && !settings.GetBool("http-only") && settings.GetBool("issue") {
+		return fmt.Errorf("domain is required when issuing certificates")
 	}
 	if !settings.GetBool("http-only") && settings.GetString("cert-dir") == "" {
 		return fmt.Errorf("cert-dir is required when not using --http-only mode")
