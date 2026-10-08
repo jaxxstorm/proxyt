@@ -2,7 +2,7 @@ module github.com/jaxxstorm/proxyt
 
 go 1.25.0
 
-toolchain go1.26.5
+toolchain go1.27.2
 
 require (
 	github.com/charmbracelet/fang v1.0.0
@@ -10,6 +10,7 @@ require (
 	github.com/jaxxstorm/vers v0.0.3
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
 	golang.org/x/crypto v0.54.0
 )
@@ -68,7 +69,6 @@ require (
 	github.com/skeema/knownhosts v1.3.2 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
-	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
