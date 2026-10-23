@@ -28,7 +28,7 @@ debug: false
 http-only: false
 ```
 
-ProxyT validates the final values after precedence is applied. `domain` is always required; `cert-dir` is required unless `http-only` is true; and `email` is required when certificate issuance is enabled.
+ProxyT validates the final values after precedence is applied. When using automatic certificate issuance, `domain` and `email` are required. `cert-dir` is required unless `http-only` is true.
 
 | Flag | Environment Variable | Description | Default | Required |
 |------|---------------------|-------------|---------|----------|
