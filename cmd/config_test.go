@@ -3,7 +3,9 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -130,6 +132,7 @@ func newTestSettings(t *testing.T) (*viper.Viper, *pflag.FlagSet) {
 	flags.Bool("debug", false, "")
 	flags.Bool("http-only", false, "")
 	flags.String("bind", "0.0.0.0", "")
+	addRuntimeFlags(flags)
 
 	settings := viper.New()
 	configureServeSettings(settings, flags)
@@ -144,4 +147,67 @@ func writeTestConfig(t *testing.T, contents string) string {
 		t.Fatalf("write configuration: %v", err)
 	}
 	return path
+}
+
+func TestRuntimeConfiguration(t *testing.T) {
+	s, _ := newTestSettings(t)
+	c, err := readRuntimeConfig(s)
+	if err != nil || c != defaultRuntimeConfig() {
+		t.Fatalf("defaults = %+v, %v", c, err)
+	}
+	for _, key := range []string{"shutdown-delay", "shutdown-timeout", "upstream-connect-timeout", "cert-reload-interval"} {
+		t.Run(key, func(t *testing.T) {
+			s, flags := newTestSettings(t)
+			s.SetConfigType("yaml")
+			if err := s.ReadConfig(strings.NewReader(key + ": 3s\n")); err != nil {
+				t.Fatal(err)
+			}
+			check := func(want time.Duration) {
+				t.Helper()
+				c, err := readRuntimeConfig(s)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := map[string]time.Duration{"shutdown-delay": c.shutdownDelay, "shutdown-timeout": c.shutdownTimeout, "upstream-connect-timeout": c.connectTimeout, "cert-reload-interval": c.reloadInterval}[key]
+				if got != want {
+					t.Fatalf("%s = %v, want %v", key, got, want)
+				}
+			}
+			check(3 * time.Second)
+			t.Setenv("PROXYT_"+strings.ToUpper(strings.ReplaceAll(key, "-", "_")), "2s")
+			check(2 * time.Second)
+			if err := flags.Set(key, "1s"); err != nil {
+				t.Fatal(err)
+			}
+			check(time.Second)
+		})
+	}
+	for _, mode := range []string{"http", "manual", "acme"} {
+		for _, key := range []string{"shutdown-delay", "shutdown-timeout", "upstream-connect-timeout", "cert-reload-interval"} {
+			for _, value := range []string{"garbage", "999999999999999999999h", "-1s", "0s"} {
+				t.Run(mode+"/"+key+"/"+value, func(t *testing.T) {
+					s, _ := newTestSettings(t)
+					s.Set("domain", "proxy.example.com")
+					s.Set("http-only", mode == "http")
+					s.Set("issue", mode == "acme")
+					s.Set("email", "a@example.com")
+					s.Set("cert-dir", "certs")
+					s.Set(key, value)
+					err := validateServeConfiguration(s)
+					if key == "shutdown-delay" && value == "0s" {
+						if err != nil {
+							t.Fatal(err)
+						}
+					} else if err == nil || !strings.Contains(err.Error(), key) {
+						t.Fatalf("expected %s error, got %v", key, err)
+					}
+				})
+			}
+		}
+	}
+	s, _ = newTestSettings(t)
+	s.Set("shutdown-delay", "9223372036854775807ns")
+	if _, err := readRuntimeConfig(s); err == nil {
+		t.Fatal("accepted shutdown duration overflow")
+	}
 }
