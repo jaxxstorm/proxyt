@@ -54,10 +54,9 @@ func loadConfiguration(settings *viper.Viper, configFile string, homeDir func() 
 	explicit := configFile != ""
 	if !explicit {
 		home, err := homeDir()
-		if err != nil {
-			return fmt.Errorf("determine home directory: %w", err)
+		if err == nil {
+			configFile = filepath.Join(home, ".proxyt.yaml")
 		}
-		configFile = filepath.Join(home, ".proxyt.yaml")
 	}
 
 	settings.SetConfigFile(configFile)
