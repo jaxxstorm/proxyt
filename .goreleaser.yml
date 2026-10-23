@@ -2,7 +2,7 @@ version: 2
 
 before:
   hooks:
-    - go mod tidy
+    - go mod tidy -diff
 
 builds:
   - id: proxyt
@@ -60,6 +60,7 @@ brews:
     repository:
       owner: jaxxstorm
       name: homebrew-tap
+      token: "{{ .Env.GH_TOKEN }}"
     commit_author:
       name:  GitHub Actions
       email: bot@leebriggs.co.uk
@@ -72,6 +73,7 @@ scoops:
     repository:
       owner: jaxxstorm
       name: scoop-bucket
+      token: "{{ .Env.GH_TOKEN }}"
     commit_author:
       name:  GitHub Actions
       email: bot@leebriggs.co.uk
