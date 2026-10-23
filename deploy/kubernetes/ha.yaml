@@ -1,0 +1,130 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: proxyt
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxyt-ha
+  namespace: proxyt
+spec:
+  replicas: 3
+  strategy:
+    rollingUpdate:
+      # Allow rolling updates with exactly three workers and strict anti-affinity.
+      maxUnavailable: 1
+      maxSurge: 0
+  selector:
+    matchLabels:
+      app: proxyt-ha
+  template:
+    metadata:
+      labels:
+        app: proxyt-ha
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      # Requires three schedulable worker nodes for three replicas.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: proxyt-ha
+      containers:
+        - name: proxyt
+          # Experimental HA tag; pin a tested version or digest for production.
+          image: ghcr.io/jaxxstorm/proxyt:ha
+          imagePullPolicy: Always
+          args:
+            - serve
+            - --domain=proxy.example.com
+            - --issue=false
+            - --cert-dir=/certs
+            - --https-port=8443
+            - --port=8080
+            - --shutdown-delay=5s
+            - --shutdown-timeout=25s
+          ports:
+            - name: https
+              containerPort: 8443
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          startupProbe:
+            httpGet:
+              path: /health
+              port: https
+              scheme: HTTPS
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: https
+              scheme: HTTPS
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: https
+              scheme: HTTPS
+            timeoutSeconds: 6
+            periodSeconds: 5
+            failureThreshold: 1
+          volumeMounts:
+            - name: certificates
+              mountPath: /certs
+              readOnly: true
+      volumes:
+        - name: certificates
+          secret:
+            secretName: proxyt-tls
+            items:
+              - key: tls.crt
+                path: proxy.example.com.crt
+              - key: tls.key
+                path: proxy.example.com.key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxyt-ha
+  namespace: proxyt
+  # Add provider-specific annotations for TCP forwarding/TLS passthrough.
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app: proxyt-ha
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: proxyt-ha
+  namespace: proxyt
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: proxyt-ha

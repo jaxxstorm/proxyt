@@ -16,6 +16,14 @@ The Tailscale control protocol uses a non-standard upgrade flow on `/ts2021`. So
 | AWS CloudFront | Not supported | CloudFront commonly drops or normalizes the `/ts2021` upgrade request |
 | Fastly free tier | Not supported | Free-tier feature limits commonly block the required upgrade flow |
 
+## High Availability
+
+Run multiple independent ProxyT instances behind a compatible load balancer,
+using the same public hostname. Place instances across hosts or failure domains
+and configure health-based routing and connection draining. See
+[High Availability](high-availability.md) for frontend requirements, certificate
+management, and a Kubernetes example.
+
 # Deployment Scenarios
 
 ## Standalone with Let's Encrypt (Default)
@@ -162,8 +170,13 @@ When `--issue=true` (default), ProxyT automatically:
 
 When `--issue=false`, provide your own certificates:
 - Place `domain.crt` and `domain.key` in `--cert-dir`
-- Ensure certificates are valid and properly formatted
-- Handle certificate renewal manually
+- Ensure certificates are currently valid for the configured domain and match their private keys
+- Arrange renewal through an external certificate manager
+
+ProxyT polls these files every `--cert-reload-interval` (default 30 seconds).
+Valid replacements are loaded atomically for new TLS handshakes without closing
+existing connections. Failed reloads retain the active certificate and are
+retried; readiness fails if the active certificate expires.
 
 ## Monitoring
 
@@ -179,7 +192,7 @@ ProxyT provides liveness and readiness endpoints:
 - HTTP: `http://proxy.example.com/ready`
 - HTTPS: `https://proxy.example.com/ready`
 
-`/ready` is a readiness endpoint. It returns `200 OK` only after ProxyT can reach `controlplane.tailscale.com` and, when ProxyT terminates TLS, has a valid non-expired certificate. It returns `503 Service Unavailable` when either dependency is unavailable. In `--http-only` mode, certificate readiness is the responsibility of the TLS-terminating proxy.
+`/ready` is a readiness endpoint. It returns `200 OK` only while ProxyT is serving, can reach `controlplane.tailscale.com`, and, when ProxyT terminates TLS, has a currently valid certificate. It returns `503 Service Unavailable` while draining or when a dependency is unavailable. In `--http-only` mode, certificate readiness is the responsibility of the TLS-terminating proxy.
 
 ### Prometheus Metrics
 
@@ -188,7 +201,13 @@ ProxyT exposes Prometheus metrics at `/metrics` on the same listener as the prox
 - `proxyt_http_requests_total`: requests by method, bounded route, and response status
 - `proxyt_http_request_duration_seconds`: request duration by method, bounded route, and response status
 - `proxyt_upstream_errors_total`: reverse-proxy and control-plane connection errors by upstream target
-- `proxyt_certificate_expiry_timestamp_seconds`: expiry of a valid certificate managed by ProxyT; absent in `--http-only` mode
+- `proxyt_certificate_expiry_timestamp_seconds`: expiry of the active certificate, including after expiry; absent in `--http-only` mode
 - `proxyt_ts2021_active_tunnels`: currently active `/ts2021` control-protocol tunnels
+- `proxyt_draining`: 1 after draining begins, otherwise 0
+- `proxyt_shutdown_forced_tunnels_total`: established tunnels forcibly closed at the shutdown deadline
+- `proxyt_certificate_reload_total`: changed certificate publications (`result="success"`) and failed reload attempts (`result="error"`)
+
+Scrape each instance independently. The metrics listener closes before the final
+tunnel drain deadline; use lifecycle logs for final forced-cleanup counts.
 
 The `route` label uses fixed local endpoint names or Tailscale upstream hosts rather than raw request paths to avoid unbounded metric cardinality.

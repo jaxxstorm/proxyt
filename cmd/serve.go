@@ -12,11 +12,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"os/signal"
-	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 
 	log "github.com/jaxxstorm/log"
@@ -45,8 +42,8 @@ var (
 			Host:   target,
 		}
 	}
-	dialControlPlane = func(network, addr string, config *tls.Config) (net.Conn, error) {
-		return tls.Dial(network, addr, config)
+	dialControlPlane = func(ctx context.Context, network, addr string, config *tls.Config) (net.Conn, error) {
+		return (&tls.Dialer{Config: config}).DialContext(ctx, network, addr)
 	}
 )
 
@@ -72,6 +69,7 @@ func init() {
 	serveCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug logging for all requests")
 	serveCmd.Flags().BoolVar(&httpOnly, "http-only", false, "Run in HTTP-only mode (for use behind HTTPS proxy/load balancer)")
 	serveCmd.Flags().StringVar(&bindAddr, "bind", "0.0.0.0", "Address to bind the server to")
+	addRuntimeFlags(serveCmd.Flags())
 
 	configureServeSettings(settings, serveCmd.Flags())
 }
@@ -80,12 +78,15 @@ func configureServeSettings(settings *viper.Viper, flags *pflag.FlagSet) {
 	settings.SetEnvPrefix("PROXYT")
 	settings.AutomaticEnv()
 	settings.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-	for _, key := range []string{"domain", "port", "https-port", "email", "cert-dir", "issue", "debug", "http-only", "bind"} {
+	for _, key := range []string{"domain", "port", "https-port", "email", "cert-dir", "issue", "debug", "http-only", "bind", "shutdown-delay", "shutdown-timeout", "upstream-connect-timeout", "cert-reload-interval"} {
 		_ = settings.BindPFlag(key, flags.Lookup(key))
 	}
 }
 
 func validateServeConfiguration(settings *viper.Viper) error {
+	if _, err := readRuntimeConfig(settings); err != nil {
+		return err
+	}
 	if settings.GetString("domain") == "" && !settings.GetBool("http-only") && settings.GetBool("issue") {
 		return fmt.Errorf("domain is required when issuing certificates")
 	}
@@ -129,6 +130,11 @@ func runProxy() {
 	if err := validateServeConfiguration(settings); err != nil {
 		logger.Fatal(err.Error())
 	}
+	runtimeSettings, _ := readRuntimeConfig(settings)
+	metrics := newProxyMetrics()
+	runtime := newProxyRuntime(runtimeSettings, metrics)
+	stop, stopSignals := terminationSignals()
+	defer stopSignals()
 
 	var certManager *autocert.Manager
 	var tlsConfig *tls.Config
@@ -148,31 +154,23 @@ func runProxy() {
 
 		logger.Info("Automatic certificate issuance enabled", log.String("domain", domain))
 	} else if !httpOnly {
-		// Check if certificates exist in cert-dir
-		certFile := filepath.Join(certDir, domain+".crt")
-		keyFile := filepath.Join(certDir, domain+".key")
-
-		if _, err := os.Stat(certFile); os.IsNotExist(err) {
-			logger.Fatal("Certificate file not found (required when --issue=false)", log.String("file", certFile))
-		}
-		if _, err := os.Stat(keyFile); os.IsNotExist(err) {
-			logger.Fatal("Key file not found (required when --issue=false)", log.String("file", keyFile))
-		}
-
-		// Load existing certificates
-		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		certificates, err := newExternalCertificates(certDir, domain, metrics, logger)
 		if err != nil {
 			logger.Fatal("Failed to load certificates", log.Error(err))
 		}
-
 		tlsConfig = &tls.Config{
-			Certificates: []tls.Certificate{cert},
+			GetCertificate: certificates.get,
 		}
+		runtime.workers.Add(1)
+		go func() {
+			defer runtime.workers.Done()
+			certificates.run(runtime.ctx, runtimeSettings.reloadInterval)
+		}()
 
 		logger.Info("Using existing certificates", log.String("cert_dir", certDir))
 	}
 
-	mainHandler := buildMainHandlerWithObservability(nil, certificateGetter(certManager, tlsConfig))
+	mainHandler := buildRuntimeHandler(nil, certificateGetter(certManager, tlsConfig), runtime)
 
 	var servers []*http.Server
 
@@ -249,10 +247,6 @@ func runProxy() {
 		}
 	}
 
-	// Channel to listen for interrupt signal
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-
 	// Start all servers
 	for _, server := range servers {
 		go func(srv *http.Server) {
@@ -285,20 +279,7 @@ func runProxy() {
 
 	// Wait for interrupt signal
 	<-stop
-	logger.Info("Shutting down servers...")
-
-	// Create a context with timeout for graceful shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Shutdown all servers
-	for _, server := range servers {
-		if err := server.Shutdown(ctx); err != nil {
-			logger.Error("Server shutdown error", log.String("addr", server.Addr), log.Error(err))
-		}
-	}
-
-	logger.Info("Servers stopped")
+	runtime.shutdown(servers)
 }
 
 const readinessTimeout = 5 * time.Second
@@ -310,11 +291,17 @@ type proxyMetrics struct {
 	upstreamErrors    *prometheus.CounterVec
 	certificateExpiry *prometheus.GaugeVec
 	activeTunnels     prometheus.Gauge
+	draining          prometheus.Gauge
+	forcedTunnels     prometheus.Counter
+	certificateReload *prometheus.CounterVec
 }
 
 func newProxyMetrics() *proxyMetrics {
 	metrics := &proxyMetrics{
-		registry: prometheus.NewRegistry(),
+		draining:          prometheus.NewGauge(prometheus.GaugeOpts{Name: "proxyt_draining", Help: "Whether the replica is draining."}),
+		forcedTunnels:     prometheus.NewCounter(prometheus.CounterOpts{Name: "proxyt_shutdown_forced_tunnels_total", Help: "Tunnels forcibly closed during shutdown."}),
+		certificateReload: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "proxyt_certificate_reload_total", Help: "Changed certificate publications and failed reload attempts."}, []string{"result"}),
+		registry:          prometheus.NewRegistry(),
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "proxyt_http_requests_total",
 			Help: "Total HTTP requests handled by ProxyT.",
@@ -337,6 +324,9 @@ func newProxyMetrics() *proxyMetrics {
 		}),
 	}
 	metrics.registry.MustRegister(
+		metrics.draining,
+		metrics.forcedTunnels,
+		metrics.certificateReload,
 		metrics.requests,
 		metrics.requestDuration,
 		metrics.upstreamErrors,
@@ -358,6 +348,11 @@ func certificateGetter(certManager *autocert.Manager, tlsConfig *tls.Config) fun
 	if certManager != nil {
 		return func() (*tls.Certificate, error) {
 			return certManager.GetCertificate(&tls.ClientHelloInfo{ServerName: domain})
+		}
+	}
+	if tlsConfig != nil && tlsConfig.GetCertificate != nil {
+		return func() (*tls.Certificate, error) {
+			return tlsConfig.GetCertificate(&tls.ClientHelloInfo{ServerName: domain})
 		}
 	}
 	if tlsConfig != nil && len(tlsConfig.Certificates) > 0 {
@@ -401,6 +396,13 @@ func (checker readinessChecker) managedCertificateExpiry() (time.Time, error) {
 	if !expiry.After(time.Now()) {
 		return time.Time{}, fmt.Errorf("certificate expired at %s", expiry.UTC().Format(time.RFC3339))
 	}
+	leaf, err := certificateLeaf(certificate)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if time.Now().Before(leaf.NotBefore) {
+		return time.Time{}, fmt.Errorf("certificate is not yet valid")
+	}
 	return expiry, nil
 }
 
@@ -437,6 +439,12 @@ func buildMainHandlerWithObservability(transport http.RoundTripper, certificate 
 
 func buildMainHandlerWithMetrics(transport http.RoundTripper, certificate func() (*tls.Certificate, error)) (http.Handler, *proxyMetrics) {
 	metrics := newProxyMetrics()
+	runtime := newProxyRuntime(defaultRuntimeConfig(), metrics)
+	return buildRuntimeHandler(transport, certificate, runtime), metrics
+}
+
+func buildRuntimeHandler(transport http.RoundTripper, certificate func() (*tls.Certificate, error), runtime *proxyRuntime) http.Handler {
+	metrics := runtime.metrics
 	readiness := readinessChecker{transport: transport, certificate: certificate}
 	reverseProxy := buildReverseProxy(transport, metrics)
 	mainHandler := http.NewServeMux()
@@ -448,11 +456,15 @@ func buildMainHandlerWithMetrics(transport http.RoundTripper, certificate func()
 	})
 
 	mainHandler.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		if runtime.draining() {
+			http.Error(w, "ProxyT is draining", http.StatusServiceUnavailable)
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), readinessTimeout)
 		defer cancel()
 
 		expiry, err := readiness.check(ctx)
-		if err != nil {
+		if err != nil || runtime.draining() {
 			logger.Error("Readiness check failed", log.Error(err))
 			http.Error(w, "ProxyT is not ready", http.StatusServiceUnavailable)
 			return
@@ -465,8 +477,12 @@ func buildMainHandlerWithMetrics(transport http.RoundTripper, certificate func()
 	})
 
 	mainHandler.Handle("/metrics", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if expiry, err := readiness.managedCertificateExpiry(); err == nil && !expiry.IsZero() {
-			metrics.certificateExpiry.WithLabelValues().Set(float64(expiry.Unix()))
+		if certificate != nil {
+			if cert, err := certificate(); err == nil {
+				if expiry, err := certificateExpiry(cert); err == nil {
+					metrics.certificateExpiry.WithLabelValues().Set(float64(expiry.Unix()))
+				}
+			}
 		}
 		promhttp.HandlerFor(metrics.registry, promhttp.HandlerOpts{}).ServeHTTP(w, r)
 	}))
@@ -499,7 +515,7 @@ func buildMainHandlerWithMetrics(transport http.RoundTripper, certificate func()
 		reverseProxy.ServeHTTP(w, r)
 	})
 
-	return instrumentHandler(mainHandler, metrics), metrics
+	return runtime.handler(instrumentHandler(mainHandler, metrics))
 }
 
 type metricsResponseWriter struct {
@@ -796,7 +812,20 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request, metr
 	}
 
 	// Connect to the backend first
-	backendConn, err := dialControlPlane("tcp", "controlplane.tailscale.com:443", &tls.Config{
+	work, _ := r.Context().Value(workContextKey{}).(*proxyWork)
+	config := defaultRuntimeConfig()
+	dial := dialControlPlane
+	if work != nil {
+		config = work.runtime.config
+		dial = work.runtime.dial
+	}
+	setupCtx, cancelSetup := context.WithTimeout(r.Context(), config.connectTimeout)
+	defer cancelSetup()
+	deadline, _ := setupCtx.Deadline()
+	controller := http.NewResponseController(w)
+	_ = controller.SetReadDeadline(deadline)
+	defer controller.SetReadDeadline(time.Time{})
+	backendConn, err := dial(setupCtx, "tcp", "controlplane.tailscale.com:443", &tls.Config{
 		ServerName: "controlplane.tailscale.com",
 	})
 	if err != nil {
@@ -811,6 +840,16 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request, metr
 		return
 	}
 	defer backendConn.Close()
+	if work != nil && !work.add(backendConn, false) {
+		return
+	}
+	if err := backendConn.SetDeadline(deadline); err != nil {
+		metrics.upstreamErrors.WithLabelValues("controlplane.tailscale.com").Inc()
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+	stopSetupIO := interruptSetup(setupCtx, backendConn, controller)
+	defer stopSetupIO()
 
 	// Write the original request to the backend
 	err = r.Write(backendConn)
@@ -836,6 +875,21 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request, metr
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
+	// Join a racing cancellation callback before clearing deadlines. A delayed
+	// callback must never set an expired deadline on an established tunnel.
+	stopSetupIO()
+	if err := setupCtx.Err(); err != nil {
+		metrics.upstreamErrors.WithLabelValues("controlplane.tailscale.com").Inc()
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+	cancelSetup()
+	if err := backendConn.SetDeadline(time.Time{}); err != nil {
+		metrics.upstreamErrors.WithLabelValues("controlplane.tailscale.com").Inc()
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+	_ = controller.SetReadDeadline(time.Time{})
 
 	logger.Info("Received control protocol response from upstream",
 		log.String("method", r.Method),
@@ -891,6 +945,11 @@ func handleTailscaleControlProtocol(w http.ResponseWriter, r *http.Request, metr
 		}()
 
 		// Wait for either direction to finish
+		<-done
+		// The first finished direction ends this tunnel. Closing both peers
+		// unblocks the other copier; wait for it before relinquishing ownership.
+		clientConn.Close()
+		backendConn.Close()
 		<-done
 		logger.Debug("Tunneling finished")
 		return

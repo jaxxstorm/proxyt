@@ -12,6 +12,8 @@ CHANGELOG.md
 dist/
 
 # Development files
+.kubeconfig
+.kubeconfig.*
 .vscode/
 .idea/
 *.swp
