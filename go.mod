@@ -1,8 +1,6 @@
 module github.com/jaxxstorm/proxyt
 
-go 1.26.0
-
-toolchain go1.27.3
+go 1.27.3
 
 require (
 	github.com/charmbracelet/fang v1.0.0

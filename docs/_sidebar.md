@@ -8,3 +8,4 @@
 * [Clients](clients.md)
 * [Troubleshooting](troubleshooting.md)
 * [Security](security.md)
+* [Upgrading and Compatibility](upgrading.md)

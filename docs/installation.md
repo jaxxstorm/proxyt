@@ -8,8 +8,16 @@ ProxyT Docker images are available on GitHub Container Registry with the followi
 - **Minimal size**: Based on distroless images for security and efficiency
 - **Multi-architecture**: Supports both AMD64 and ARM64
 - **Non-root user**: Runs as user 65532 for security
-- **Signal handling**: Uses dumb-init as PID 1 for proper signal forwarding
-- **Pre-created directories**: Certificate directory `/certs` ready for use
+- **Signal handling**: The Go binary runs directly as PID 1 and handles SIGTERM/SIGINT
+
+Tagged release images are built by GoReleaser using `ko` and
+`gcr.io/distroless/static-debian12:nonroot`. Pass `serve` explicitly after the
+image name. They contain no shell or dumb-init and do not pre-create a writable
+`/certs` directory. For automatic issuance, supply persistent storage writable
+by UID/GID 65532; see [configuration](configuration.md#docker).
+
+The repository's Dockerfile is a separate local-build option: it includes
+dumb-init, creates `/certs`, and defaults to `serve`.
 
 ```bash
 # Pull the latest image
@@ -40,7 +48,7 @@ ARCH=$(uname -m)
 case $ARCH in
   x86_64) ARCH="amd64" ;;
   aarch64) ARCH="arm64" ;;
-  armv7l) ARCH="arm64" ;;
+  armv7l) echo "32-bit ARM is not supported by the published binaries"; exit 1 ;;
   *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
@@ -67,4 +75,3 @@ sudo mv proxyt /usr/local/bin/
 ```
 
 Or manually download from the [releases page](https://github.com/jaxxstorm/proxyt/releases).
-

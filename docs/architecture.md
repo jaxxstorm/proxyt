@@ -14,6 +14,22 @@ The proxy intelligently routes requests based on path patterns and headers:
                                            └─────────────────────────┘
 ```
 
+## Encryption boundaries
+
+ProxyT terminates the outer TLS connection and opens a separate TLS connection
+to Tailscale. In HTTP-only mode the frontend handles incoming TLS instead.
+After the `/ts2021` upgrade, the inner Noise session remains end-to-end between
+the client and Tailscale; ProxyT relays its encrypted bytes without decrypting
+the control payload.
+
+```text
+Outer TLS:  client <----> ProxyT <----> Tailscale
+Inner Noise: client <----------------> Tailscale
+```
+
+This opacity applies to the upgraded Noise stream, not ordinary browser/API
+HTTP traffic. ProxyT can inspect or rewrite ordinary HTTP requests and responses.
+
 ## Request Routing Logic
 
 - **Control Protocol** (`/ts2021`): Custom protocol upgrade handler for Tailscale's control protocol

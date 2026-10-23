@@ -28,11 +28,11 @@ debug: false
 http-only: false
 ```
 
-ProxyT validates the final values after precedence is applied. When using automatic certificate issuance, `domain` and `email` are required. `cert-dir` is required unless `http-only` is true.
+ProxyT validates the final values after precedence is applied. When using automatic certificate issuance, `domain` and `email` are required. Manual TLS also needs `domain` to locate and validate its certificate. `cert-dir` is required unless `http-only` is true. See [compatibility and upgrade notes](upgrading.md) for the 0.1.0 changes and planned stable interfaces.
 
 | Flag | Environment Variable | Description | Default | Required |
 |------|---------------------|-------------|---------|----------|
-| `--domain` | `PROXYT_DOMAIN` | Your custom domain name | - | Yes |
+| `--domain` | `PROXYT_DOMAIN` | Your custom domain name | - | Required for automatic issuance and manual certificate hostname validation; optional in HTTP-only mode |
 | `--email` | `PROXYT_EMAIL` | Email for Let's Encrypt registration | - | Yes (when --issue=true) |
 | `--cert-dir` | `PROXYT_CERT_DIR` | Directory for SSL certificates | - | Yes (when not --http-only) |
 | `--issue` | `PROXYT_ISSUE` | Auto-issue Let's Encrypt certificates | `true` | No |
@@ -58,6 +58,18 @@ and shutdown budgeting, see [High Availability](high-availability.md).
 ## Docker
 
 ### Run with automatic certificates (requires volumes for certificate storage)
+
+Prepare the volume once for the release image's non-root user (also required
+before the Compose example below):
+
+```bash
+docker volume create proxyt-certs
+docker run --rm --user 0 -v proxyt-certs:/certs alpine:3 \
+  sh -c 'chown 65532:65532 /certs && chmod 700 /certs'
+```
+
+For bind mounts, set equivalent ownership and permissions on the host. Manual
+certificate mounts only need to be readable by UID 65532 and can be read-only.
 
 ```bash
 docker run -d \
@@ -97,6 +109,8 @@ services:
 
 volumes:
   proxyt-certs:
+    external: true
+    name: proxyt-certs
 ```
 
 ```bash

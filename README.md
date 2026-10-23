@@ -25,7 +25,8 @@ Managed CDN and edge-proxy platforms that only support standard WebSocket `GET` 
 - 📦 [Installation](https://proxyt.io/#/installation) - Install ProxyT on your platform
 - ⚙️ [Configuration](https://proxyt.io/#/configuration) - Configure ProxyT with flags or environment variables
 - [High Availability](https://proxyt.io/#/high-availability) - Run multiple instances behind a compatible load balancer
-- 🚀 [Deployment](https://proxyt.io/#/deployment) - Deploy to Railway, Docker, or your own server
+- 🚀 [Hosting](https://proxyt.io/#/hosting) - Choose a compatible frontend and host ProxyT
+- [Upgrading](https://proxyt.io/#/upgrading) - Prepare for 0.1.0 and review compatibility
 - 🔧 [Tailscale Setup](https://proxyt.io/#/clients) - Configure Tailscale clients to use ProxyT
 - 🛠️ [Troubleshooting](https://proxyt.io/#/troubleshooting) - Common issues and solutions
 - 🔒 [Security](https://proxyt.io/#/security) - Security considerations and best practices
