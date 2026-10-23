@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -396,11 +397,17 @@ func TestTS2021HandlerTracksActiveTunnels(t *testing.T) {
 	backend.StartTLS()
 	t.Cleanup(backend.Close)
 
-	dialControlPlane = func(network, addr string, config *tls.Config) (net.Conn, error) {
+	dialControlPlane = func(_ context.Context, network, addr string, config *tls.Config) (net.Conn, error) {
 		return tls.Dial(network, strings.TrimPrefix(backend.URL, "https://"), &tls.Config{InsecureSkipVerify: true})
 	}
 	handler, _ := buildMainHandlerWithMetrics(nil, nil)
-	proxy := httptest.NewServer(handler)
+	handlerDone := make(chan struct{})
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, r)
+		if r.URL.Path == "/ts2021" {
+			close(handlerDone)
+		}
+	}))
 	t.Cleanup(proxy.Close)
 
 	clientConn, err := net.Dial("tcp", strings.TrimPrefix(proxy.URL, "http://"))
@@ -443,6 +450,11 @@ func TestTS2021HandlerTracksActiveTunnels(t *testing.T) {
 	if err := <-backendResult; err != nil {
 		t.Fatalf("backend tunnel: %v", err)
 	}
+	select {
+	case <-handlerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("proxy tunnel did not finish")
+	}
 	metricsResponse, err = proxy.Client().Get(proxy.URL + "/metrics")
 	if err != nil {
 		t.Fatalf("GET closed tunnel metrics: %v", err)
@@ -472,7 +484,7 @@ func TestTS2021HandlerPreservesMethodAndUpgradeHeaders(t *testing.T) {
 	}))
 	t.Cleanup(backend.Close)
 
-	dialControlPlane = func(network, addr string, config *tls.Config) (net.Conn, error) {
+	dialControlPlane = func(_ context.Context, network, addr string, config *tls.Config) (net.Conn, error) {
 		return tls.Dial(network, strings.TrimPrefix(backend.URL, "https://"), &tls.Config{
 			InsecureSkipVerify: true,
 		})
@@ -566,14 +578,13 @@ func TestTS2021HandlerTunnelsBufferedBytes(t *testing.T) {
 	backend.StartTLS()
 	t.Cleanup(backend.Close)
 
-	dialControlPlane = func(network, addr string, config *tls.Config) (net.Conn, error) {
+	dialControlPlane = func(_ context.Context, network, addr string, config *tls.Config) (net.Conn, error) {
 		return tls.Dial(network, strings.TrimPrefix(backend.URL, "https://"), &tls.Config{
 			InsecureSkipVerify: true,
 		})
 	}
 
-	proxy := httptest.NewServer(buildMainHandler(nil))
-	t.Cleanup(proxy.Close)
+	proxy := runtimeServer(t, testRuntime(t), nil)
 
 	clientConn, err := net.Dial("tcp", strings.TrimPrefix(proxy.URL, "http://"))
 	if err != nil {
@@ -622,7 +633,7 @@ func TestTS2021HandlerTunnelsBufferedBytes(t *testing.T) {
 func TestTS2021HandlerReturnsBadGatewayOnDialFailure(t *testing.T) {
 	withProxyTestGlobals(t)
 
-	dialControlPlane = func(network, addr string, config *tls.Config) (net.Conn, error) {
+	dialControlPlane = func(_ context.Context, network, addr string, config *tls.Config) (net.Conn, error) {
 		return nil, errors.New("boom")
 	}
 

@@ -41,6 +41,19 @@ ProxyT validates the final values after precedence is applied. `domain` is alway
 | `--debug` | `PROXYT_DEBUG` | Enable debug logging | `false` | No |
 | `--http-only` | `PROXYT_HTTP_ONLY` | Run behind HTTPS proxy (no TLS termination) | `false` | No |
 | `--bind` | `PROXYT_BIND` | Address to bind the server to | `0.0.0.0` | No |
+| `--shutdown-delay` | `PROXYT_SHUTDOWN_DELAY` | Routing propagation delay before listener shutdown | `5s` | No |
+| `--shutdown-timeout` | `PROXYT_SHUTDOWN_TIMEOUT` | Shared request/tunnel drain budget after the delay | `25s` | No |
+| `--upstream-connect-timeout` | `PROXYT_UPSTREAM_CONNECT_TIMEOUT` | Entire `/ts2021` upstream setup: dial, TLS handshake, request write, and response headers | `10s` | No |
+| `--cert-reload-interval` | `PROXYT_CERT_RELOAD_INTERVAL` | External TLS certificate polling interval | `30s` | No |
+
+Durations use Go duration syntax, such as `500ms` or `30s`. Only
+`shutdown-delay` permits zero; all other durations must be positive. Invalid or
+overflowing values fail startup. The upstream setup timeout does not limit an
+established tunnel's lifetime. Certificate polling applies to TLS mode with
+`--issue=false`.
+
+For multiple instances, load-balancer requirements, certificate distribution,
+and shutdown budgeting, see [High Availability](high-availability.md).
 
 ## Docker
 
